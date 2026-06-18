@@ -7,6 +7,7 @@
   "idle_color": [0, 0, 255],
   "ps_menu": true,
   "circle_left": true,
+  "square_f1": true,
   "touchpad_mouse": true,
   "mouse_sensitivity_x": 0.15,
   "mouse_sensitivity_y": 0.2,

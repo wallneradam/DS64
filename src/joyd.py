@@ -16,6 +16,7 @@ Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
 Optional extra buttons (each toggled in the config):
   PS button -> toggle the U64 menu on release (via the menu_button API)
   circle    -> Left (the "back" direction inside the U64 menu)
+  square    -> F1 (a C64 function key, sent over the keyboard gadget)
 
 Modes (from the shared config file, live-reloaded):
   auto   - any real input switches the U64 into WASD mode; after `idle_timeout`
@@ -46,6 +47,7 @@ CONFIG = os.environ.get("DS64_CONFIG", "/etc/ds64/config.json")
 STATUS = os.environ.get("DS64_STATUS", "/run/ds64/status.json")
 
 W, A, S, D, RET = 0x1a, 0x04, 0x16, 0x07, 0x28
+F1 = 0x3a   # USB HID keycode for F1 -> the firmware maps it to the C64 F1 key
 DEAD = 64   # analog stick distance from center (128) to count as a direction
 TRIG = 64   # L2/R2 analog trigger threshold (rest 0 .. full 255)
 TICK = 0.15      # seconds between idle/config checks
@@ -67,6 +69,7 @@ DEFAULTS = {
     "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
     "ps_menu": True,               # PS button -> toggle the U64 menu (menu_button API)
     "circle_left": True,           # circle -> Left (back in the U64 menu)
+    "square_f1": True,             # square -> F1 (a C64 function key)
     "touchpad_mouse": True,             # touchpad -> Commodore 1351 mouse (port 1)
     "mouse_sensitivity_x": 0.15,        # horizontal scale on the raw touchpad deltas
     "mouse_sensitivity_y": 0.2,         # vertical scale (the pad is short in Y -> a touch faster)
@@ -217,6 +220,7 @@ class Bridge:
                    E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0}
         self.fire_down = set()
         self.circle = False
+        self.f1_down = False         # square held -> F1 keycode in the keyboard report
         self.ps_held = False         # while the PS button is held, suppress all other input
         # Two independent HID gadget fds, one per interface. O_NONBLOCK so a write
         # can never freeze the bridge if the C64 stops draining an endpoint -- a
@@ -275,6 +279,7 @@ class Bridge:
                         E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0})
         self.fire_down.clear()
         self.circle = False
+        self.f1_down = False
 
     def state(self):
         a = self.ax
@@ -291,15 +296,18 @@ class Bridge:
 
     # --- outputs ---
     def send_keys(self):
-        if not self.wasd_on:
-            return
-        up, down, left, right, fire = self.state()
         keys = []
-        if up: keys.append(W)
-        if down: keys.append(S)
-        if left: keys.append(A)
-        if right: keys.append(D)
-        if fire: keys.append(RET)
+        # WASD only in joystick mode (otherwise the letters would type), but F1 is a
+        # function key -> it is sent whenever square is held, joystick on or off.
+        if self.wasd_on:
+            up, down, left, right, fire = self.state()
+            if up: keys.append(W)
+            if down: keys.append(S)
+            if left: keys.append(A)
+            if right: keys.append(D)
+            if fire: keys.append(RET)
+        if self.f1_down and self.cfg.get("square_f1", True):
+            keys.append(F1)
         keys = keys[:6]
         # Standard 8-byte boot-keyboard payload: modifiers, reserved, 6 keycodes.
         report = bytes([0, 0] + keys + [0] * (6 - len(keys)))
@@ -582,6 +590,8 @@ class Bridge:
                 self.fire_down.discard(e.code)
         elif e.type == E.EV_KEY and e.code == E.BTN_EAST:  # circle
             self.circle = bool(e.value)
+        elif e.type == E.EV_KEY and e.code == E.BTN_WEST:  # square -> F1
+            self.f1_down = bool(e.value)
         else:
             return
         self.react(now)
