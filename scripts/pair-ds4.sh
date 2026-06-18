@@ -44,9 +44,28 @@ BTMON_PID=$!
 sleep 0.4
 
 echo "Scanning ${SCAN_SECS}s -- put the controller in pairing mode now (SHARE+PS held until the lightbar double-flashes)..."
-bluetoothctl --timeout "$SCAN_SECS" scan on >/dev/null 2>&1
+# DS4/DS5 controllers connect over classic BR/EDR. BlueZ's default discovery filter
+# ('auto' transport) interleaves BR/EDR inquiry with LE scanning, and when several BLE
+# devices are advertising nearby the LE half starves the inquiry windows -- the
+# controller then never appears in scan results (only LE devices do). Pin the discovery
+# filter to 'bredr' so classic inquiry runs unimpeded (and skip the BLE noise). The MAC
+# is grabbed from the live scan output because BlueZ ages a freshly discovered, unbonded
+# device out of its cache shortly after discovery stops.
+SCAN_LOG=$(mktemp /tmp/ds64-scan.XXXXXX)
+{
+  printf 'menu scan\n'
+  printf 'transport bredr\n'
+  printf 'back\n'
+  printf 'scan on\n'; sleep "$SCAN_SECS"
+  printf 'devices\n'
+  printf 'scan off\n'
+  printf 'quit\n'
+} | bluetoothctl >"$SCAN_LOG" 2>&1
 
-MAC=$(known_controllers | head -1)
+MAC=$(grep -iE "$CTRL_RE" "$SCAN_LOG" \
+        | grep -ioE "([0-9A-F]{2}:){5}[0-9A-F]{2}" | head -1 | tr 'a-f' 'A-F')
+[ -z "$MAC" ] && MAC=$(known_controllers | head -1)
+rm -f "$SCAN_LOG"
 if [ -z "$MAC" ]; then
   kill "$BTMON_PID" 2>/dev/null; wait "$BTMON_PID" 2>/dev/null
   echo "NO controller found. Devices seen:"; bluetoothctl devices
