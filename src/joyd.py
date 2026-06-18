@@ -7,15 +7,16 @@ keystrokes W/A/S/D/RETURN become a real joystick.
 
 Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
 Optional extra buttons (each toggled in the config):
-  triangle -> F10, i.e. enter the U64 menu
-  circle   -> Left (the "back" direction inside the U64 menu)
+  PS button -> F10 on release, i.e. enter the U64 menu
+  circle    -> Left (the "back" direction inside the U64 menu)
 
 Modes (from the shared config file, live-reloaded):
   auto   - any real input switches the U64 into WASD mode; after `idle_timeout`
            seconds with no input it switches back to Normal (so W/A/S/D are free
-           to type again). The PS button toggles it; after a PS-off any input
-           turns it straight back on.
-  manual - the PS button toggles WASD mode on/off; input alone never switches it.
+           to type again). The triangle button toggles it; after a triangle-off
+           any input turns it straight back on.
+  manual - the triangle button toggles WASD mode on/off; input alone never
+           switches it.
 
 The controller lightbar shows the state: green while WASD is active, blue idle.
 """
@@ -57,7 +58,7 @@ DEFAULTS = {
     "u64_host": "192.168.5.64",
     "active_color": [0, 255, 0],   # lightbar while WASD active (green)
     "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
-    "triangle_menu": True,         # triangle -> F10 (open the U64 menu)
+    "ps_menu": True,               # PS button -> F10 (open the U64 menu)
     "circle_left": True,           # circle -> Left (back in the U64 menu)
 }
 
@@ -254,9 +255,9 @@ class Bridge:
         print("WASD ->", "ON" if on else "OFF", file=sys.stderr)
         self.write_status(force=True)
 
-    def on_ps(self, now):
-        # Both modes: PS toggles WASD. In auto, after a PS-off any real input
-        # turns it straight back on (react() handles that on the next tick).
+    def toggle_wasd(self, now):
+        # Both modes: triangle toggles WASD. In auto, after a triangle-off any
+        # real input turns it straight back on (react() handles that next tick).
         self.set_wasd(not self.wasd_on)
 
     def menu_tap(self):
@@ -271,7 +272,7 @@ class Bridge:
         except OSError as ex:
             self._on_hid_error(ex)
             return
-        print("triangle -> menu (F10)", file=sys.stderr)
+        print("PS -> menu (F10)", file=sys.stderr)
 
     # --- status for the web UI ---
     def write_status(self, force=False):
@@ -327,12 +328,13 @@ class Bridge:
                 pass
 
     def handle(self, e, now):
-        if e.type == E.EV_KEY and e.code == E.BTN_MODE and e.value == 1:
-            self.on_ps(now)
-            return
-        if e.type == E.EV_KEY and e.code == E.BTN_NORTH:  # triangle
-            if e.value == 1 and self.cfg.get("triangle_menu", True):
+        if e.type == E.EV_KEY and e.code == E.BTN_MODE:  # PS -> menu (F10) on release
+            if e.value == 0 and self.cfg.get("ps_menu", True):
                 self.menu_tap()
+            return
+        if e.type == E.EV_KEY and e.code == E.BTN_NORTH:  # triangle -> WASD toggle
+            if e.value == 1:
+                self.toggle_wasd(now)
             return
         if e.type == E.EV_ABS and e.code in self.ax:
             self.ax[e.code] = e.value
