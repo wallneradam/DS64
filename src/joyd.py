@@ -217,6 +217,7 @@ class Bridge:
                    E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0}
         self.fire_down = set()
         self.circle = False
+        self.ps_held = False         # while the PS button is held, suppress all other input
         # Two independent HID gadget fds, one per interface. O_NONBLOCK so a write
         # can never freeze the bridge if the C64 stops draining an endpoint -- a
         # dropped report is re-sent (keys) or discarded (mouse motion is
@@ -265,6 +266,16 @@ class Bridge:
             self.write_status(force=True)
 
     # --- input state ---
+    def reset_inputs(self):
+        """Snap every tracked input back to neutral. Used when the PS button goes
+        down so a joystick/button held during that hold cannot stay stuck and leak
+        into the U64 menu when PS is released (axes only re-engage on a fresh
+        evdev event, i.e. when the user actually moves them again)."""
+        self.ax.update({E.ABS_X: 128, E.ABS_Y: 128, E.ABS_RX: 128, E.ABS_RY: 128,
+                        E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0})
+        self.fire_down.clear()
+        self.circle = False
+
     def state(self):
         a = self.ax
         up = a[E.ABS_HAT0Y] < 0 or a[E.ABS_Y] < 128 - DEAD or a[E.ABS_RY] < 128 - DEAD
@@ -543,8 +554,20 @@ class Bridge:
 
     def handle(self, e, now):
         if e.type == E.EV_KEY and e.code == E.BTN_MODE:  # PS -> menu toggle on release
-            if e.value == 0 and self.cfg.get("ps_menu", True):
-                self.menu_tap()
+            if e.value == 1:
+                # Release everything while PS is held: clear any held key/joy so it
+                # can't stay stuck and drive the menu (or instantly confirm) once
+                # the menu opens on release.
+                self.ps_held = True
+                self.reset_inputs()
+                self.send_release()
+            elif e.value == 0:
+                self.ps_held = False
+                if self.cfg.get("ps_menu", True):
+                    self.menu_tap()
+            return
+        if self.ps_held:
+            # PS held -> ignore every other input (see the BTN_MODE press handler).
             return
         if e.type == E.EV_KEY and e.code == E.BTN_NORTH:  # triangle -> WASD toggle
             if e.value == 1:
