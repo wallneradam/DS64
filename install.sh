@@ -16,11 +16,13 @@ BRANCH="${DS64_BRANCH:-main}"
 DEST="${DS64_DEST:-/opt/ds64}"
 MODULES_CONF=/etc/modules-load.d/c64u-joy.conf
 INPUT_CONF=/etc/bluetooth/input.conf
+NM_PSAVE_CONF=/etc/NetworkManager/conf.d/00-ds64-wifi-powersave-off.conf
 CONFIG_DIR=/etc/ds64
 UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web)
 
 REBOOT_NEEDED=0
 BT_RESTART=0
+NM_RELOAD=0
 
 say()  { printf '\n==> %s\n' "$*"; }
 ok()   { printf '    [ok] %s\n' "$*"; }
@@ -129,7 +131,24 @@ else
     BT_RESTART=1
 fi
 
-# --- 6. app config dir ---------------------------------------------------------
+# --- 6. WiFi power-save off (Bluetooth coexistence) ----------------------------
+# WiFi and BT share one radio on the Pi (BCM4345). With WiFi power-save on, the
+# radio naps and starves the BT side -> the controller link drops every few
+# minutes, and on the resulting disconnect the BT firmware wedges
+# (`hci0: command 0x0406 tx timeout`) until a reboot. A global NM default keeps
+# the radio awake for every (re)connected WiFi profile, netplan-rendered or not.
+say "WiFi power-save off -> $NM_PSAVE_CONF"
+want_psave=$'[connection]\nwifi.powersave = 2'
+if [ -f "$NM_PSAVE_CONF" ] && [ "$(cat "$NM_PSAVE_CONF")" = "$want_psave" ]; then
+    ok "wifi.powersave = 2 (disabled) already set"
+else
+    install -d -m 755 "$(dirname "$NM_PSAVE_CONF")"
+    printf '%s\n' "$want_psave" > "$NM_PSAVE_CONF"
+    chg "wrote $NM_PSAVE_CONF (wifi.powersave = 2)"
+    NM_RELOAD=1
+fi
+
+# --- 7. app config dir ---------------------------------------------------------
 say "App config -> $CONFIG_DIR"
 install -d -m 755 "$CONFIG_DIR"
 if [ -f "$CONFIG_DIR/config.json" ]; then
@@ -141,7 +160,7 @@ else
     ok "no example config; daemons will create defaults on first run"
 fi
 
-# --- 7. systemd units ----------------------------------------------------------
+# --- 8. systemd units ----------------------------------------------------------
 say "systemd units"
 for u in "${UNITS[@]}"; do
     install -m 644 "$DEST/setup/systemd/$u.service" "/etc/systemd/system/$u.service"
@@ -161,21 +180,26 @@ systemctl daemon-reload
 systemctl enable -q "${UNITS[@]}"
 ok "installed + enabled: ${UNITS[*]}"
 
-# --- 8. maintenance tooling ----------------------------------------------------
+# --- 9. maintenance tooling ----------------------------------------------------
 say "Maintenance tooling -> /usr/local/sbin"
 install -m 755 "$DEST/setup/ds64-lock"   /usr/local/sbin/ds64-lock
 install -m 755 "$DEST/setup/ds64-unlock" /usr/local/sbin/ds64-unlock
 ok "installed ds64-lock, ds64-unlock"
 
-# --- 9. apply now (or defer to the reboot) -------------------------------------
+# --- 10. apply now (or defer to the reboot) ------------------------------------
 if [ "$REBOOT_NEEDED" -eq 0 ]; then
     if [ "$BT_RESTART" -eq 1 ]; then systemctl restart bluetooth || true; fi
+    if [ "$NM_RELOAD" -eq 1 ]; then
+        nmcli general reload 2>/dev/null || systemctl reload NetworkManager 2>/dev/null || true
+        wifi_dev=$(nmcli -t -f DEVICE,TYPE d 2>/dev/null | awk -F: '/:wifi$/{print $1; exit}')
+        [ -n "$wifi_dev" ] && iw dev "$wifi_dev" set power_save off 2>/dev/null || true
+    fi
     say "Applying (dwc2 already active) -- (re)starting services"
     systemctl restart ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web || true
     ok "services restarted"
 fi
 
-# --- 10. harden by default (read-only appliance) -------------------------------
+# --- 11. harden by default (read-only appliance) -------------------------------
 # A C64 has no shutdown -- power is just cut -- so the safe steady state is the
 # read-only overlay (runtime writes go to RAM, dropped on reboot) plus a small
 # journaled image that persists the bond / WiFi / config. Opt out: DS64_NO_HARDEN=1.
