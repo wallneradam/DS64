@@ -1,0 +1,10 @@
+{
+  "port": 2,
+  "mode": "auto",
+  "idle_timeout": 2.0,
+  "u64_host": "192.168.5.64",
+  "active_color": [0, 255, 0],
+  "idle_color": [0, 0, 255],
+  "triangle_menu": true,
+  "circle_left": true
+}

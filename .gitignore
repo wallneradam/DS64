@@ -1,0 +1,15 @@
+# Auto-memory and Claude working files — never publish
+MEMORY.md
+.claude/
+
+# Local reference material, not part of this project
+# (the U64 firmware source clone and its build artifacts)
+1541ultimate/
+build/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

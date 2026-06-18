@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""DS64 bridge: a game controller as a Commodore 64 Ultimate joystick.
+
+Reads a Bluetooth/USB game controller and drives the U64 over a USB HID keyboard
+gadget (/dev/hidg0). With the U64 'Joystick Swapper' set to a WASD mode, the
+keystrokes W/A/S/D/RETURN become a real joystick.
+
+Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
+Optional extra buttons (each toggled in the config):
+  triangle -> F10, i.e. enter the U64 menu
+  circle   -> Left (the "back" direction inside the U64 menu)
+
+Modes (from the shared config file, live-reloaded):
+  auto   - any real input switches the U64 into WASD mode; after `idle_timeout`
+           seconds with no input it switches back to Normal (so W/A/S/D are free
+           to type again). The PS button toggles it; after a PS-off any input
+           turns it straight back on.
+  manual - the PS button toggles WASD mode on/off; input alone never switches it.
+
+The controller lightbar shows the state: green while WASD is active, blue idle.
+"""
+import errno
+import glob
+import json
+import os
+import sys
+import time
+import selectors
+import urllib.parse
+import urllib.request
+
+import evdev
+from evdev import ecodes as E
+
+HIDG = "/dev/hidg0"
+CONFIG = os.environ.get("DS64_CONFIG", "/etc/ds64/config.json")
+STATUS = os.environ.get("DS64_STATUS", "/run/ds64/status.json")
+
+W, A, S, D, RET = 0x1a, 0x04, 0x16, 0x07, 0x28
+MENU_F10 = 0x43      # the U64 opens its menu on USB F10 (firmware ultimate.cc main loop)
+DEAD = 64   # analog stick distance from center (128) to count as a direction
+TRIG = 64   # L2/R2 analog trigger threshold (rest 0 .. full 255)
+TICK = 0.15      # seconds between idle/config checks
+HEARTBEAT = 2.0  # refresh status.json at least this often, so the web UI sees us alive
+
+FIRE_BTNS = {E.BTN_SOUTH, E.BTN_TL, E.BTN_TR, E.BTN_TL2, E.BTN_TR2}  # X, L1, R1, L2, R2
+
+# hidg0 write errno values that mean the C64 USB host is absent (off / not yet
+# enumerated) rather than a real fault -- the bridge must survive these so it
+# keeps reading the controller and updating the heartbeat until the C64 returns.
+HID_HOST_ABSENT = (errno.ESHUTDOWN, errno.ENODEV, errno.EIO)
+
+DEFAULTS = {
+    "port": 2,                # 1 or 2 (which control port the joystick appears on)
+    "mode": "auto",           # "auto" | "manual"
+    "idle_timeout": 2.0,      # seconds of no input before auto switches back to Normal
+    "u64_host": "192.168.5.64",
+    "active_color": [0, 255, 0],   # lightbar while WASD active (green)
+    "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
+    "triangle_menu": True,         # triangle -> F10 (open the U64 menu)
+    "circle_left": True,           # circle -> Left (back in the U64 menu)
+}
+
+SWAPPER_PATH = "/v1/configs/U64%20Specific%20Settings/Joystick%20Swapper"
+
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    try:
+        with open(CONFIG) as f:
+            cfg.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    except Exception as ex:
+        print("config read error:", ex, file=sys.stderr)
+    return cfg
+
+
+def find_controller():
+    for path in evdev.list_devices():
+        dev = evdev.InputDevice(path)
+        keys = dev.capabilities().get(E.EV_KEY, [])
+        if E.BTN_SOUTH in keys or E.BTN_GAMEPAD in keys:
+            return dev
+    return None
+
+
+def find_leds():
+    """Locate the controller's R/G/B lightbar LED class devices, if any."""
+    for red in glob.glob("/sys/class/leds/*:red"):
+        base = red.rsplit(":", 1)[0]
+        return {
+            "red": base + ":red/brightness",
+            "green": base + ":green/brightness",
+            "blue": base + ":blue/brightness",
+            "global": base + ":global/brightness",
+        }
+    return None
+
+
+class Bridge:
+    def __init__(self, dev):
+        self.dev = dev
+        self.cfg = load_config()
+        self.cfg_mtime = self._mtime()
+        self.leds = find_leds()
+        self.ax = {E.ABS_X: 128, E.ABS_Y: 128, E.ABS_RX: 128, E.ABS_RY: 128,
+                   E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0}
+        self.fire_down = set()
+        self.circle = False
+        self.hidf = open(HIDG, "wb")
+        self.last_report = None
+        self.last_hid_reopen = 0.0
+        self.wasd_on = None          # tri-state until first set_wasd()
+        self.last_active = 0.0
+        self.status_cache = None
+        self.last_status_ts = 0.0
+
+    # --- config ---
+    def _mtime(self):
+        try:
+            return os.path.getmtime(CONFIG)
+        except OSError:
+            return 0
+
+    def reload_config_if_changed(self):
+        m = self._mtime()
+        if m != self.cfg_mtime:
+            self.cfg_mtime = m
+            old_port = self.cfg.get("port")
+            self.cfg = load_config()
+            if self.wasd_on and self.cfg.get("port") != old_port:
+                self.rest_put("WASD Port %d" % int(self.cfg["port"]))
+            self.write_status(force=True)
+
+    # --- input state ---
+    def state(self):
+        a = self.ax
+        up = a[E.ABS_HAT0Y] < 0 or a[E.ABS_Y] < 128 - DEAD or a[E.ABS_RY] < 128 - DEAD
+        down = a[E.ABS_HAT0Y] > 0 or a[E.ABS_Y] > 128 + DEAD or a[E.ABS_RY] > 128 + DEAD
+        left = (a[E.ABS_HAT0X] < 0 or a[E.ABS_X] < 128 - DEAD or a[E.ABS_RX] < 128 - DEAD
+                or (self.circle and self.cfg.get("circle_left", True)))
+        right = a[E.ABS_HAT0X] > 0 or a[E.ABS_X] > 128 + DEAD or a[E.ABS_RX] > 128 + DEAD
+        fire = bool(self.fire_down) or a[E.ABS_Z] > TRIG or a[E.ABS_RZ] > TRIG
+        return up, down, left, right, fire
+
+    def is_active(self):
+        return any(self.state())
+
+    # --- outputs ---
+    def send_keys(self):
+        if not self.wasd_on:
+            return
+        up, down, left, right, fire = self.state()
+        keys = []
+        if up: keys.append(W)
+        if down: keys.append(S)
+        if left: keys.append(A)
+        if right: keys.append(D)
+        if fire: keys.append(RET)
+        keys = keys[:6]
+        report = bytes([0, 0] + keys + [0] * (6 - len(keys)))
+        self._write(report)
+
+    def send_release(self):
+        self._write(bytes(8))
+
+    def _write(self, report):
+        if report == self.last_report:
+            return
+        try:
+            self.hidf.write(report)
+            self.hidf.flush()
+            self.last_report = report
+        except OSError as ex:
+            self._on_hid_error(ex)
+
+    def _on_hid_error(self, ex):
+        # The C64 USB host is absent (off / not enumerated): hidg0 writes fail
+        # with ESHUTDOWN/ENODEV. Don't propagate -- that would tear the bridge
+        # down into a tight reconnect loop and starve the status heartbeat.
+        # Force a re-send once the host returns, and reopen the gadget fd at
+        # most once a second so a stale endpoint cannot keep us wedged.
+        if ex.errno not in HID_HOST_ABSENT:
+            raise
+        self.last_report = None
+        now = time.monotonic()
+        if now - self.last_hid_reopen > 1.0:
+            self.last_hid_reopen = now
+            try:
+                self.hidf.close()
+            except OSError:
+                pass
+            try:
+                self.hidf = open(HIDG, "wb")
+            except OSError:
+                pass
+
+    def set_color(self, rgb):
+        if not self.leds:
+            return
+        try:
+            g = self.leds.get("global")
+            if g and os.path.exists(g):
+                with open(g, "w") as f:
+                    f.write("1")
+            for ch, val in zip(("red", "green", "blue"), rgb):
+                with open(self.leds[ch], "w") as f:
+                    f.write(str(int(val)))
+        except OSError as ex:
+            print("lightbar write error:", ex, file=sys.stderr)
+
+    def rest_put(self, value):
+        url = "http://%s%s?value=%s" % (
+            self.cfg["u64_host"], SWAPPER_PATH, urllib.parse.quote(value))
+        try:
+            req = urllib.request.Request(url, method="PUT")
+            urllib.request.urlopen(req, timeout=3).read()
+        except Exception as ex:
+            print("REST put '%s' failed: %s" % (value, ex), file=sys.stderr)
+
+    def set_wasd(self, on):
+        if on == self.wasd_on:
+            return
+        if on:
+            self.rest_put("WASD Port %d" % int(self.cfg["port"]))
+            self.set_color(self.cfg["active_color"])
+            self.wasd_on = True
+        else:
+            self.send_release()
+            self.rest_put("Normal")
+            self.set_color(self.cfg["idle_color"])
+            self.wasd_on = False
+        print("WASD ->", "ON" if on else "OFF", file=sys.stderr)
+        self.write_status(force=True)
+
+    def on_ps(self, now):
+        # Both modes: PS toggles WASD. In auto, after a PS-off any real input
+        # turns it straight back on (react() handles that on the next tick).
+        self.set_wasd(not self.wasd_on)
+
+    def menu_tap(self):
+        """Tap F10 (the U64 menu hotkey) via the HID gadget."""
+        try:
+            self.hidf.write(bytes([0, 0, MENU_F10, 0, 0, 0, 0, 0]))
+            self.hidf.flush()
+            time.sleep(0.15)
+            self.hidf.write(bytes(8))
+            self.hidf.flush()
+            self.last_report = bytes(8)
+        except OSError as ex:
+            self._on_hid_error(ex)
+            return
+        print("triangle -> menu (F10)", file=sys.stderr)
+
+    # --- status for the web UI ---
+    def write_status(self, force=False):
+        st = {
+            "controller": self.dev.name,
+            "wasd_on": bool(self.wasd_on),
+            "mode": self.cfg["mode"],
+            "port": int(self.cfg["port"]),
+            "ts": time.time(),
+        }
+        key = (st["controller"], st["wasd_on"], st["mode"], st["port"])
+        now = time.monotonic()
+        if not force and key == self.status_cache and (now - self.last_status_ts) < HEARTBEAT:
+            return
+        self.status_cache = key
+        self.last_status_ts = now
+        try:
+            os.makedirs(os.path.dirname(STATUS), exist_ok=True)
+            tmp = STATUS + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(st, f)
+            os.replace(tmp, STATUS)
+        except OSError as ex:
+            print("status write error:", ex, file=sys.stderr)
+
+    # --- main loop ---
+    def run(self):
+        sel = selectors.DefaultSelector()
+        try:
+            self.set_wasd(False)   # clean baseline: Normal + idle color
+            sel.register(self.dev.fileno(), selectors.EVENT_READ)
+            while True:
+                ready = sel.select(timeout=TICK)
+                now = time.monotonic()
+                if ready:
+                    try:
+                        for e in self.dev.read():
+                            self.handle(e, now)
+                    except BlockingIOError:
+                        pass
+                self.tick(now)
+        finally:
+            # Controller gone or error: leave the C64 in Normal, release keys.
+            try:
+                self.send_release()
+            except OSError:
+                pass
+            self.rest_put("Normal")
+            self.wasd_on = False
+            try:
+                self.hidf.close()
+            except OSError:
+                pass
+
+    def handle(self, e, now):
+        if e.type == E.EV_KEY and e.code == E.BTN_MODE and e.value == 1:
+            self.on_ps(now)
+            return
+        if e.type == E.EV_KEY and e.code == E.BTN_NORTH:  # triangle
+            if e.value == 1 and self.cfg.get("triangle_menu", True):
+                self.menu_tap()
+            return
+        if e.type == E.EV_ABS and e.code in self.ax:
+            self.ax[e.code] = e.value
+        elif e.type == E.EV_KEY and e.code in FIRE_BTNS:
+            if e.value:
+                self.fire_down.add(e.code)
+            else:
+                self.fire_down.discard(e.code)
+        elif e.type == E.EV_KEY and e.code == E.BTN_EAST:  # circle
+            self.circle = bool(e.value)
+        else:
+            return
+        self.react(now)
+
+    def tick(self, now):
+        self.reload_config_if_changed()
+        self.react(now)
+
+    def react(self, now):
+        active = self.is_active()
+        if active:
+            self.last_active = now
+        if self.cfg["mode"] == "auto":
+            if active and not self.wasd_on:
+                self.set_wasd(True)
+            elif self.wasd_on and (now - self.last_active) > float(self.cfg["idle_timeout"]):
+                self.set_wasd(False)
+        self.send_keys()
+        self.write_status()
+
+
+def write_waiting_status():
+    """Status while no controller is connected, so the web UI stays informed."""
+    cfg = load_config()
+    st = {"controller": None, "wasd_on": False,
+          "mode": cfg["mode"], "port": int(cfg["port"]), "ts": time.time()}
+    try:
+        os.makedirs(os.path.dirname(STATUS), exist_ok=True)
+        tmp = STATUS + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, STATUS)
+    except OSError:
+        pass
+
+
+def main():
+    while True:
+        dev = find_controller()
+        if dev is None:
+            write_waiting_status()
+            time.sleep(1.0)
+            continue
+        print("Using:", dev.name, dev.path, file=sys.stderr)
+        try:
+            Bridge(dev).run()
+        except OSError as ex:
+            print("controller lost:", ex, file=sys.stderr)
+            write_waiting_status()
+        except Exception as ex:
+            print("bridge error:", ex, file=sys.stderr)
+            write_waiting_status()
+        time.sleep(1.0)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

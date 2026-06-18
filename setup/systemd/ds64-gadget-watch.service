@@ -1,0 +1,13 @@
+[Unit]
+Description=DS64 USB gadget watchdog (re-assert until the C64 enumerates the keyboard)
+Requires=ds64-gadget.service
+After=ds64-gadget.service
+ConditionPathExists=/opt/ds64/setup/gadget-watch.sh
+
+[Service]
+ExecStart=/bin/bash /opt/ds64/setup/gadget-watch.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

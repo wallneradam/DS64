@@ -1,0 +1,12 @@
+[Unit]
+Description=DS64 USB HID keyboard gadget
+After=sys-kernel-config.mount systemd-modules-load.service
+ConditionPathExists=/opt/ds64/setup/gadget-setup.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/ds64/setup/gadget-setup.sh
+
+[Install]
+WantedBy=multi-user.target

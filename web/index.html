@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DS64</title>
+<style>
+  :root { --bg:#352879; --fg:#7c70da; --hi:#b0a4ff; --ok:#5cd65c; --off:#8a7fd6; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--hi);
+         font-family: "Menlo","Consolas",monospace; line-height:1.5; }
+  .wrap { max-width:560px; margin:0 auto; padding:24px 18px 60px; }
+  h1 { font-size:1.8rem; letter-spacing:2px; margin:.2em 0 0; }
+  .sub { color:var(--fg); margin:.2em 0 1.4em; font-size:.85rem; }
+  .card { border:2px solid var(--fg); border-radius:8px; padding:16px 18px; margin:0 0 18px; }
+  .card h2 { font-size:1rem; letter-spacing:1px; margin:0 0 12px; color:var(--hi); }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:10px 0; }
+  .seg { display:inline-flex; border:2px solid var(--fg); border-radius:6px; overflow:hidden; }
+  .seg button { background:transparent; color:var(--fg); border:0; padding:7px 16px;
+                font:inherit; cursor:pointer; white-space:nowrap; }
+  .seg button.on { background:var(--fg); color:var(--bg); font-weight:bold; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:160px; height:6px;
+                      border-radius:3px; background:var(--fg); cursor:pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+       width:16px; height:16px; border-radius:50%; background:var(--hi); border:0; }
+  input[type=range]::-moz-range-thumb { width:16px; height:16px; border-radius:50%;
+       background:var(--hi); border:0; }
+  input[type=range]::-moz-range-track { height:6px; border-radius:3px; background:var(--fg); }
+  .tctl { display:inline-flex; align-items:center; gap:8px; }
+  .numbox { width:64px; background:transparent; color:var(--hi); border:2px solid var(--fg);
+            border-radius:6px; padding:5px 6px; font:inherit; text-align:right; }
+  .hostbox { width:100%; background:transparent; color:var(--hi); border:2px solid var(--fg);
+             border-radius:6px; padding:7px 9px; font:inherit; }
+  .unit { color:var(--fg); }
+  button.act { background:var(--hi); color:var(--bg); border:0; border-radius:6px;
+               padding:11px 18px; font:inherit; font-weight:bold; cursor:pointer; width:100%; }
+  button.act.danger { background:#d65c5c; }
+  button.act:disabled { opacity:.5; cursor:wait; }
+  .btnrow { display:flex; gap:10px; }
+  .btnrow .act { width:auto; flex:1; }
+  .btnrow .logbtn { flex:1; margin-top:0; }
+  #pairresult { font-size:.82rem; }
+  .logbtn { margin-top:10px; background:transparent; color:var(--hi); border:2px solid var(--fg);
+            border-radius:6px; padding:6px 12px; font:inherit; font-size:.8rem; cursor:pointer; }
+  .ok { color:var(--ok); } .warn { color:#ffd24d; }
+  .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
+           align-items:center; justify-content:center; padding:18px; z-index:10; }
+  .modal.show { display:flex; }
+  .modalbox { background:var(--bg); border:2px solid var(--hi); border-radius:8px;
+              max-width:560px; width:100%; max-height:80vh; display:flex; flex-direction:column; }
+  .modalhead { display:flex; justify-content:space-between; align-items:center;
+               padding:12px 16px; border-bottom:2px solid var(--fg); letter-spacing:1px; }
+  .xbtn { background:transparent; border:0; color:var(--hi); font-size:1.4rem; cursor:pointer; line-height:1; }
+  .modalbox pre { margin:0; padding:14px 16px; overflow:auto; color:var(--fg); font-size:.74rem; }
+  .badge { padding:3px 12px; border-radius:20px; font-weight:bold; font-size:.85rem; }
+  .badge.on { background:var(--ok); color:#062b06; }
+  .badge.off { background:transparent; color:var(--off); border:2px solid var(--off); }
+  .muted { color:var(--fg); font-size:.82rem; }
+  pre { white-space:pre-wrap; color:var(--fg); font-size:.78rem; margin:10px 0 0; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+         background:var(--off); margin-right:7px; vertical-align:middle; }
+  .dot.live { background:var(--ok); }
+  @media (max-width:480px) {
+    .wrap { padding:18px 14px 48px; }
+    .row { flex-wrap:wrap; }
+    .row > .seg, .row > .tctl, .row > .badge, .row > .logbtn { margin-left:auto; }
+    .seg button { padding:7px 13px; }
+    input[type=range] { width:130px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>DS64</h1>
+  <div class="sub">a game controller as a C64 Ultimate joystick</div>
+
+  <div class="card">
+    <h2>C64 CONNECTION</h2>
+    <div class="row">
+      <span><span id="u64dot" class="dot"></span><span id="u64state" class="muted">checking...</span></span>
+    </div>
+    <input type="text" id="u64host" class="hostbox" placeholder="192.168.5.64"
+           spellcheck="false" autocomplete="off">
+    <div class="btnrow" style="margin-top:10px">
+      <button class="logbtn" id="u64detect">DETECT</button>
+      <button class="logbtn" id="u64save">SAVE</button>
+    </div>
+    <div class="muted" style="margin-top:10px">The Pi reaches the U64 over the network to switch it in and out of joystick mode. Auto-detected when possible; edit to override.</div>
+  </div>
+
+  <div class="card">
+    <h2>STATUS</h2>
+    <div class="row">
+      <span><span id="dot" class="dot"></span><span id="ctrl">no controller</span></span>
+      <span id="wasd" class="badge off">WASD OFF</span>
+    </div>
+    <div class="muted" id="modeline">&nbsp;</div>
+  </div>
+
+  <div class="card">
+    <h2>CONTROLLER</h2>
+    <div class="row" id="bondedrow" style="display:none">
+      <span class="muted">paired</span>
+      <span id="bondedname" style="color:var(--hi); font-weight:bold;">&mdash;</span>
+    </div>
+    <button class="act" id="pairbtn">PAIR CONTROLLER</button>
+    <div class="btnrow" id="pairedbtns" style="display:none">
+      <button class="act" id="disconnectbtn">DISCONNECT</button>
+      <button class="act danger" id="forgetbtn">FORGET</button>
+    </div>
+    <div class="muted" id="pairhint" style="margin-top:8px">Hold SHARE + PS until the lightbar double-flashes, then press.</div>
+    <div id="pairresult" style="margin-top:10px"></div>
+    <button class="logbtn" id="logbtn" style="display:none">show pairing log</button>
+  </div>
+
+  <div class="card">
+    <h2>JOYSTICK PORT</h2>
+    <div class="row">
+      <span class="muted">which control port the C64 sees</span>
+      <span class="seg" id="port">
+        <button data-v="1">PORT 1</button><button data-v="2">PORT 2</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>MODE</h2>
+    <div class="row">
+      <span class="muted">WASD switching</span>
+      <span class="seg" id="mode">
+        <button data-v="auto">AUTO</button><button data-v="manual">MANUAL</button>
+      </span>
+    </div>
+    <div class="row" id="timeoutrow">
+      <span class="muted">auto-off after idle</span>
+      <span class="tctl"><input type="range" id="timeout" min="0.5" max="10" step="0.5">
+            <input type="number" id="toval" class="numbox" min="0.5" max="300" step="0.5"><span class="unit">s</span></span>
+    </div>
+    <div class="muted" id="modehelp">&nbsp;</div>
+  </div>
+
+  <div class="card">
+    <h2>EXTRA BUTTONS</h2>
+    <div class="row">
+      <span class="muted">triangle &rarr; U64 menu (F10)</span>
+      <span class="seg" id="triangle_menu">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="muted">circle &rarr; left (back in menu)</span>
+      <span class="seg" id="circle_left">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="logmodal">
+  <div class="modalbox">
+    <div class="modalhead"><span>PAIRING LOG</span><button class="xbtn" id="logclose">&times;</button></div>
+    <pre id="logtext"></pre>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let cfg = null;
+
+function paintSeg(id, val) {
+  document.querySelectorAll('#' + id + ' button').forEach(b =>
+    b.classList.toggle('on', b.dataset.v == String(val)));
+}
+
+function paintConfig(c) {
+  cfg = c;
+  paintSeg('port', c.port);
+  paintSeg('mode', c.mode);
+  paintSeg('triangle_menu', c.triangle_menu ? 1 : 0);
+  paintSeg('circle_left', c.circle_left ? 1 : 0);
+  $('#timeout').value = Math.min(10, Math.max(0.5, Number(c.idle_timeout)));
+  $('#toval').value = Number(c.idle_timeout);
+  const auto = c.mode === 'auto';
+  $('#timeoutrow').style.display = auto ? '' : 'flex';
+  $('#modehelp').textContent = auto
+    ? 'Any stick/D-pad/fire input turns the joystick on; it turns off after the idle time. PS button forces off.'
+    : 'The PS button toggles the joystick on and off. Input alone never switches it.';
+}
+
+async function save(patch) {
+  const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(patch)});
+  const j = await r.json();
+  if (j.config) paintConfig(j.config);
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    const j = await r.json();
+    if (j.config && !document.activeElement.closest('input,button')) paintConfig(j.config);
+    const s = j.status;
+    const live = s && (Date.now()/1000 - s.ts) < 5;
+    $('#dot').classList.toggle('live', !!live);
+    $('#ctrl').textContent = (s && live) ? (s.controller || 'waiting for controller...') : 'daemon not running';
+    const on = !!(s && live && s.wasd_on);
+    const badge = $('#wasd');
+    badge.textContent = on ? 'WASD ON' : 'WASD OFF';
+    badge.className = 'badge ' + (on ? 'on' : 'off');
+    $('#modeline').textContent = (s && live)
+      ? ('mode: ' + s.mode + '   ·   port ' + s.port) : '';
+  } catch (e) { /* keep polling */ }
+}
+
+document.querySelectorAll('#port button').forEach(b =>
+  b.onclick = () => save({port: Number(b.dataset.v)}));
+document.querySelectorAll('#mode button').forEach(b =>
+  b.onclick = () => save({mode: b.dataset.v}));
+document.querySelectorAll('#triangle_menu button').forEach(b =>
+  b.onclick = () => save({triangle_menu: b.dataset.v === '1'}));
+document.querySelectorAll('#circle_left button').forEach(b =>
+  b.onclick = () => save({circle_left: b.dataset.v === '1'}));
+$('#timeout').oninput = e => { $('#toval').value = e.target.value; };
+$('#timeout').onchange = e => save({idle_timeout: Number(e.target.value)});
+$('#toval').onchange = e => {
+  let v = Number(e.target.value);
+  if (!isFinite(v)) { paintConfig(cfg); return; }
+  v = Math.max(0.5, Math.min(300, v));
+  e.target.value = v;
+  $('#timeout').value = Math.min(10, v);
+  save({idle_timeout: v});
+};
+
+let lastLog = '';
+function setResult(html, cls) { const el = $('#pairresult'); el.innerHTML = html; el.className = cls || 'muted'; }
+
+async function refreshController() {
+  try {
+    const c = (await (await fetch('/api/controller')).json()).controller;
+    const has = !!c;
+    const conn = has && c.connected;
+    $('#bondedrow').style.display = has ? 'flex' : 'none';
+    $('#bondedname').textContent = has ? c.name : '';
+    $('#pairbtn').style.display = has ? 'none' : 'block';
+    $('#pairedbtns').style.display = has ? 'flex' : 'none';
+    $('#disconnectbtn').style.display = conn ? '' : 'none';   // only when actually connected
+    if (has && !c.persistent)
+      $('#pairhint').innerHTML = '<span class="warn">This pairing is not durable yet &mdash; FORGET and PAIR again to make it survive a power-off.</span>';
+    else
+      $('#pairhint').textContent = has
+        ? (conn ? 'Connected. DISCONNECT drops the link; FORGET removes the pairing.'
+                : 'Press PS on the controller to connect it. FORGET removes the pairing.')
+        : 'Hold SHARE + PS until the lightbar double-flashes, then press.';
+  } catch (e) { /* leave as is */ }
+}
+
+$('#pairbtn').onclick = async () => {
+  const btn = $('#pairbtn');
+  btn.disabled = true; btn.textContent = 'PAIRING (~30s)...';
+  setResult('Scanning &mdash; keep the controller in pairing mode (double-flash)...', 'muted');
+  $('#logbtn').style.display = 'none'; lastLog = '';
+  try {
+    const j = await (await fetch('/api/pair', {method:'POST'})).json();
+    lastLog = j.log || '';
+    const c = j.controller;
+    if (j.ok) setResult('&#10003; Paired ' + ((c && c.name) || 'controller'), 'ok');
+    else if (c) setResult('! Paired, but the bond is not durable. Open the log for details.', 'warn');
+    else setResult('No controller found. Hold SHARE+PS until the lightbar double-flashes, then retry.', 'warn');
+  } catch (e) {
+    setResult('Pairing request failed.', 'warn');
+  }
+  if (lastLog) $('#logbtn').style.display = 'inline-block';
+  btn.disabled = false; btn.textContent = 'PAIR CONTROLLER';
+  refreshController();
+};
+
+$('#disconnectbtn').onclick = async () => {
+  const btn = $('#disconnectbtn');
+  btn.disabled = true; btn.textContent = 'DISCONNECTING...';
+  setResult('', 'muted');
+  try {
+    const j = await (await fetch('/api/disconnect', {method:'POST'})).json();
+    setResult(j.ok ? 'Disconnected &mdash; press PS to reconnect.' : (j.message || 'failed'), 'muted');
+  } catch (e) {
+    setResult('Disconnect request failed.', 'warn');
+  }
+  btn.disabled = false; btn.textContent = 'DISCONNECT';
+  refreshController();
+};
+
+$('#forgetbtn').onclick = async () => {
+  const btn = $('#forgetbtn');
+  btn.disabled = true; btn.textContent = 'FORGETTING...';
+  setResult('', 'muted'); $('#logbtn').style.display = 'none'; lastLog = '';
+  try {
+    const j = await (await fetch('/api/forget', {method:'POST'})).json();
+    setResult(j.ok ? 'Forgot the controller.' : (j.message || 'failed'), 'muted');
+  } catch (e) {
+    setResult('Forget request failed.', 'warn');
+  }
+  btn.disabled = false; btn.textContent = 'FORGET';
+  refreshController();
+};
+
+$('#logbtn').onclick = () => { $('#logtext').textContent = lastLog; $('#logmodal').classList.add('show'); };
+$('#logclose').onclick = () => $('#logmodal').classList.remove('show');
+$('#logmodal').onclick = e => { if (e.target.id === 'logmodal') $('#logmodal').classList.remove('show'); };
+
+async function refreshU64() {
+  try {
+    const j = await (await fetch('/api/u64')).json();
+    if (document.activeElement !== $('#u64host')) $('#u64host').value = j.host || '';
+    $('#u64dot').classList.toggle('live', !!j.reachable);
+    $('#u64state').innerHTML = j.reachable
+      ? '<span class="ok">connected</span> &middot; ' + (j.product || 'Ultimate')
+        + (j.hostname ? ' &middot; ' + j.hostname : '')
+      : '<span class="warn">not reachable</span>';
+    return !!j.reachable;
+  } catch (e) { return false; }
+}
+
+async function detectU64() {
+  const b = $('#u64detect'), t = b.textContent;
+  b.disabled = true; b.textContent = 'SCANNING...';
+  $('#u64state').innerHTML = '<span class="muted">scanning the network...</span>';
+  try {
+    const j = await (await fetch('/api/detect_u64', {method:'POST'})).json();
+    if (j.found && j.found.length) {
+      $('#u64host').value = j.found[0].host;
+      await save({u64_host: j.found[0].host});
+      await refreshU64();
+    } else {
+      $('#u64state').innerHTML = '<span class="warn">no U64 found &mdash; enter the address manually</span>';
+    }
+  } catch (e) {
+    $('#u64state').innerHTML = '<span class="warn">scan failed</span>';
+  }
+  b.disabled = false; b.textContent = t;
+}
+
+async function saveHost() {
+  const v = $('#u64host').value.trim();
+  if (!v) { refreshU64(); return; }
+  await save({u64_host: v});
+  refreshU64();
+}
+
+$('#u64detect').onclick = detectU64;
+$('#u64save').onclick = saveHost;
+$('#u64host').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); saveHost(); } };
+
+fetch('/api/config').then(r => r.json()).then(paintConfig);
+refreshController(); setInterval(refreshController, 4000);
+refreshU64().then(ok => { if (!ok) detectU64(); }); setInterval(refreshU64, 5000);
+poll(); setInterval(poll, 1500);
+</script>
+</body>
+</html>

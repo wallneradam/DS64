@@ -1,0 +1,25 @@
+[Unit]
+Description=DS64: make the Bluetooth adapter connectable so a paired controller can reconnect
+# A fresh boot leaves the adapter powered but NOT connectable (no page scan), so it
+# silently ignores the controller's reconnect page. Plain `connectable on` fixes it.
+# Do NOT use FastConnectable / `fast-connectable`: on this Pi it triggers an HCI
+# Write Scan Enable the firmware can't handle (tx timeout, -110, adapter won't power
+# on) -- recovery needs a reboot. Plain connectable is safe.
+After=bluetooth.service
+Wants=bluetooth.service
+Before=ds64-joyd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+# The adapter is already powered by bluetoothd (Policy AutoEnable=true); only the
+# connectable flag is missing. btmgmt HANGS when its stdin is not a tty (which is the
+# case under systemd, where stdin is /dev/null) -- so run it inside a pty via
+# `script -qec` (which also returns btmgmt's own exit code). Do NOT use FastConnectable
+# and do NOT call `btmgmt power on` here -- both are unsafe/hang on this Pi. Retry a few
+# times with a timeout in case the adapter isn't ready the instant we run.
+ExecStart=/bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do timeout 8 script -qec "/usr/bin/btmgmt connectable on" /dev/null </dev/null >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+
+[Install]
+WantedBy=multi-user.target

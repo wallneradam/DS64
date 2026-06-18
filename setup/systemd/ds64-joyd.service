@@ -1,0 +1,14 @@
+[Unit]
+Description=DS64 controller-to-joystick bridge
+Requires=ds64-gadget.service
+Wants=ds64-bt-connectable.service
+After=ds64-gadget.service bluetooth.service network-online.target ds64-bt-connectable.service
+
+[Service]
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+ExecStart=/usr/bin/python3 /opt/ds64/src/joyd.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
