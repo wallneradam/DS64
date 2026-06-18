@@ -7,7 +7,7 @@ keystrokes W/A/S/D/RETURN become a real joystick.
 
 Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
 Optional extra buttons (each toggled in the config):
-  PS button -> F10 on release, i.e. enter the U64 menu
+  PS button -> toggle the U64 menu on release (via the menu_button API)
   circle    -> Left (the "back" direction inside the U64 menu)
 
 Modes (from the shared config file, live-reloaded):
@@ -38,7 +38,6 @@ CONFIG = os.environ.get("DS64_CONFIG", "/etc/ds64/config.json")
 STATUS = os.environ.get("DS64_STATUS", "/run/ds64/status.json")
 
 W, A, S, D, RET = 0x1a, 0x04, 0x16, 0x07, 0x28
-MENU_F10 = 0x43      # the U64 opens its menu on USB F10 (firmware ultimate.cc main loop)
 DEAD = 64   # analog stick distance from center (128) to count as a direction
 TRIG = 64   # L2/R2 analog trigger threshold (rest 0 .. full 255)
 TICK = 0.15      # seconds between idle/config checks
@@ -58,7 +57,7 @@ DEFAULTS = {
     "u64_host": "192.168.5.64",
     "active_color": [0, 255, 0],   # lightbar while WASD active (green)
     "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
-    "ps_menu": True,               # PS button -> F10 (open the U64 menu)
+    "ps_menu": True,               # PS button -> toggle the U64 menu (menu_button API)
     "circle_left": True,           # circle -> Left (back in the U64 menu)
 }
 
@@ -261,18 +260,18 @@ class Bridge:
         self.set_wasd(not self.wasd_on)
 
     def menu_tap(self):
-        """Tap F10 (the U64 menu hotkey) via the HID gadget."""
+        """Toggle the U64 menu via the menu_button API, which simulates the
+        physical menu button -- the firmware's real open/close toggle. A USB
+        F10 only opens it, and the physical button is a hardware signal no USB
+        scancode can reach. See firmware api/route_machine.cc."""
+        url = "http://%s/v1/machine:menu_button" % self.cfg["u64_host"]
         try:
-            self.hidf.write(bytes([0, 0, MENU_F10, 0, 0, 0, 0, 0]))
-            self.hidf.flush()
-            time.sleep(0.15)
-            self.hidf.write(bytes(8))
-            self.hidf.flush()
-            self.last_report = bytes(8)
-        except OSError as ex:
-            self._on_hid_error(ex)
+            req = urllib.request.Request(url, method="PUT")
+            urllib.request.urlopen(req, timeout=3).read()
+        except Exception as ex:
+            print("menu_button PUT failed: %s" % ex, file=sys.stderr)
             return
-        print("PS -> menu (F10)", file=sys.stderr)
+        print("PS -> menu (toggle)", file=sys.stderr)
 
     # --- status for the web UI ---
     def write_status(self, force=False):
@@ -328,7 +327,7 @@ class Bridge:
                 pass
 
     def handle(self, e, now):
-        if e.type == E.EV_KEY and e.code == E.BTN_MODE:  # PS -> menu (F10) on release
+        if e.type == E.EV_KEY and e.code == E.BTN_MODE:  # PS -> menu toggle on release
             if e.value == 0 and self.cfg.get("ps_menu", True):
                 self.menu_tap()
             return
