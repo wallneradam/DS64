@@ -314,13 +314,10 @@ async function refreshController() {
     $('#pairbtn').style.display = has ? 'none' : 'block';
     $('#pairedbtns').style.display = has ? 'flex' : 'none';
     $('#disconnectbtn').style.display = conn ? '' : 'none';   // only when actually connected
-    if (has && !c.persistent)
-      $('#pairhint').innerHTML = '<span class="warn">This pairing is not durable yet &mdash; FORGET and PAIR again to make it survive a power-off.</span>';
-    else
-      $('#pairhint').textContent = has
-        ? (conn ? 'Connected. DISCONNECT drops the link; FORGET removes the pairing.'
-                : 'Press PS on the controller to connect it. FORGET removes the pairing.')
-        : 'Hold SHARE + PS until the lightbar double-flashes, then press.';
+    $('#pairhint').textContent = has
+      ? (conn ? 'Connected. DISCONNECT drops the link; FORGET removes the pairing.'
+              : 'Press PS on the controller to connect it. FORGET removes the pairing.')
+      : 'Hold SHARE + PS until the lightbar double-flashes, then press.';
   } catch (e) { /* leave as is */ }
 }
 
