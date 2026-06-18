@@ -122,9 +122,13 @@ fi
 
 # --- reboot --------------------------------------------------------------------
 if [ "$NEED_REBOOT" -eq 1 ]; then
-    say "Rebooting in 5s to activate -- Ctrl-C to cancel"
-    sleep 5
-    reboot
+    if [ -n "${DS64_NO_REBOOT:-}" ]; then
+        say "Hardening staged -- a reboot is required to activate it."
+    else
+        say "Rebooting in 5s to activate -- Ctrl-C to cancel"
+        sleep 5
+        reboot
+    fi
 else
     say "Already hardened; nothing to reboot."
 fi

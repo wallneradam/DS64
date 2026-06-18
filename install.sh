@@ -37,6 +37,22 @@ else die "config.txt not found in /boot/firmware or /boot -- is this Raspberry P
 fi
 CONFIG_TXT="$BOOT/config.txt"
 
+# --- refuse to update a hardened (read-only) system ----------------------------
+# With the overlay active, writes to the root fs (/opt/ds64, systemd units, ...)
+# land on a tmpfs the next reboot discards, so the update would silently vanish.
+overlay_active=0
+[ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = "overlay" ] && overlay_active=1
+if command -v raspi-config >/dev/null 2>&1 \
+   && [ "$(raspi-config nonint get_overlay_now 2>/dev/null)" = "0" ]; then
+    overlay_active=1
+fi
+if [ "$overlay_active" -eq 1 ]; then
+    die "This Pi is hardened (read-only) -- an update would not stick.
+    Unlock first, then re-run this installer (it updates AND re-hardens):
+        sudo ds64-unlock      # disables the overlay, then reboots
+    After it reboots, run the  curl ... | sudo bash  line again."
+fi
+
 # --- 1. packages ---------------------------------------------------------------
 say "Packages"
 miss=()
@@ -159,6 +175,23 @@ if [ "$REBOOT_NEEDED" -eq 0 ]; then
     ok "services restarted"
 fi
 
+# --- 10. harden by default (read-only appliance) -------------------------------
+# A C64 has no shutdown -- power is just cut -- so the safe steady state is the
+# read-only overlay (runtime writes go to RAM, dropped on reboot) plus a small
+# journaled image that persists the bond / WiFi / config. Opt out: DS64_NO_HARDEN=1.
+HARDEN=0
+if [ -z "${DS64_NO_HARDEN:-}" ]; then
+    say "Hardening (read-only appliance) -- set DS64_NO_HARDEN=1 to skip"
+    if DS64_IMG="$BOOT/ds64-data.img" DS64_NO_REBOOT=1 /usr/local/sbin/ds64-lock; then
+        HARDEN=1
+        REBOOT_NEEDED=1
+    else
+        warn "hardening failed -- system left writable; retry later with: sudo ds64-lock"
+    fi
+else
+    ok "DS64_NO_HARDEN set -- root filesystem left writable (not power-loss proof)"
+fi
+
 # --- summary -------------------------------------------------------------------
 ip=$(hostname -I 2>/dev/null | awk '{print $1}') || ip=
 host=$(hostname 2>/dev/null || echo raspberrypi)
@@ -172,14 +205,24 @@ printf '    Web UI        http://%s:8080/\n'   "${ip:-<pi-ip>}"
 printf '                  http://%s.local:8080/\n\n' "$host"
 printf '    Pair a pad    open the Web UI, or run:\n'
 printf '                  bash %s/scripts/pair-ds4.sh\n\n' "$DEST"
-printf '    Harden        make it power-loss proof once it all works:\n'
-printf '                  sudo ds64-lock     # read-only + persistent store\n'
-printf '                  sudo ds64-unlock   # undo, e.g. to update the OS\n\n'
-printf '    Update later  re-run this installer (git-pulls + restarts)\n'
+if [ "$HARDEN" -eq 1 ]; then
+    printf '    Appliance     read-only mode is ON -- power-loss proof\n\n'
+    printf '    Update later  sudo ds64-unlock  (reboots), then re-run this\n'
+    printf '                  installer -- it updates and re-hardens for you\n'
+else
+    printf '    Harden        make it power-loss proof (recommended):\n'
+    printf '                  sudo ds64-lock     # read-only + persistent store\n'
+    printf '                  sudo ds64-unlock   # undo, e.g. to update the OS\n\n'
+    printf '    Update later  re-run this installer (git-pulls + restarts)\n'
+fi
 
 if [ "$REBOOT_NEEDED" -eq 1 ]; then
     printf '\n  %s\n' "$bar"
-    printf '    ! ONE reboot is needed to activate USB gadget mode.\n'
+    if [ "$HARDEN" -eq 1 ]; then
+        printf '    ! ONE reboot activates USB gadget + read-only mode.\n'
+    else
+        printf '    ! ONE reboot is needed to activate USB gadget mode.\n'
+    fi
     printf '      The Web UI above will not respond until the Pi reboots.\n'
     printf '  %s\n' "$bar"
     if [ -t 1 ] && [ -e /dev/tty ]; then

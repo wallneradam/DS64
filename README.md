@@ -133,16 +133,18 @@ Bluetooth bonding policy, and installs + enables the background services (the US
 keyboard, the bridge daemon, the web panel, and helpers that keep the C64 link and
 controller reconnect reliable). It then prints the address of the web panel.
 
-On the **first** install USB gadget mode needs **one reboot** to activate, so when
-it finishes the installer offers to reboot for you — just press **ENTER** (or
-Ctrl-C to do it later with `sudo reboot`). The **web panel only responds after that
-reboot**. Later re-runs apply straight away and don't reboot.
+On the **first** install the Pi needs **one reboot** — it activates USB gadget mode
+and, by default, **appliance mode** (the read-only, power-loss-proof system
+described below). When it finishes the installer offers to reboot for you — just
+press **ENTER** (or Ctrl-C to do it later with `sudo reboot`). The **web panel only
+responds after that reboot**.
 
-- **Update later:** re-run the exact same command — it just pulls the latest
-  version and restarts the services. Re-running is always safe; it only fixes
-  what's wrong.
-- It doesn't repartition your card or make anything read-only — that's a separate,
-  optional step (see [Appliance mode](#appliance-mode-power-loss-proof-optional)).
+- **Update later:** the system is read-only by default, so first run `sudo
+  ds64-unlock` (it reboots), then re-run the install command — it pulls the latest
+  version *and* re-hardens for you.
+- **Skip the read-only mode:** prefix the install command with `DS64_NO_HARDEN=1` to
+  leave the card writable. Not recommended — a power cut can then corrupt it (see
+  [Appliance mode](#appliance-mode-read-only-power-loss-proof)).
 
 ## First run
 
@@ -242,27 +244,31 @@ one specific pad. In practice:
 work**, but the **analog sticks read as permanently pushed**. Use the D-pad for
 now — full analog support is on the [Roadmap](#roadmap).
 
-## Appliance mode (power-loss proof, optional)
+## Appliance mode (read-only, power-loss proof)
 
-A C64 has no shutdown button — you just flip the switch. Once everything works,
-you can make the Pi survive that the same way:
+A C64 has no shutdown button — you just flip the switch. So the installer makes the
+Pi survive that **by default**: the root filesystem is **read-only** (runtime writes
+go to RAM and are dropped on reboot, so yanking power can't corrupt the SD card),
+while a small journaled image keeps the few things that must persist — the
+controller bond, your WiFi profiles and the DS64 config. Just power the Pi off with
+the C64; there's nothing to shut down. This is also why the WiFi/bond/config you set
+**after** the install (pairing a pad, picking the C64) still survive a power cut.
 
-```
-sudo ds64-lock      # turn the Pi into a read-only appliance (one reboot)
-```
-
-This makes the root filesystem **read-only** (so yanking power can't corrupt the
-SD card) while keeping the few things that must persist — the controller bond,
-your WiFi profiles and the DS64 config. After this, just power the Pi off with the
-C64; there's nothing to shut down.
-
-To update the software or use the Pi for other things again, undo it first:
+To **update** the software or use the Pi for other things, unlock it first:
 
 ```
-sudo ds64-unlock    # make the system writable again, then re-run the installer
+sudo ds64-unlock    # make the system writable again, then reboots
 ```
 
-Both commands are reversible and safe to re-run.
+After it reboots, re-run the install command (it pulls the latest version and
+re-hardens for you). To re-harden by hand at any time:
+
+```
+sudo ds64-lock      # back to the read-only appliance (one reboot)
+```
+
+Both commands are reversible and safe to re-run. To install **without** hardening in
+the first place, prefix the install command with `DS64_NO_HARDEN=1`.
 
 ## Limitations
 
