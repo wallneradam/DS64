@@ -1,0 +1,130 @@
+#!/bin/bash
+# ds64-lock -- turn the Pi into a power-loss-proof appliance.
+#
+# Enables the read-only root overlay (writes go to RAM, discarded on reboot, so
+# the SD card is never written at runtime and cannot be corrupted by yanking
+# power) AND a small journaled ext4 image on the FAT boot partition that keeps
+# the few things that must persist: the controller bond, the WiFi profiles and
+# the app config. Idempotent; reverse with ds64-unlock (e.g. to update the OS).
+set -euo pipefail
+
+IMG="${DS64_IMG:-/boot/firmware/ds64-data.img}"
+SIZE_MB="${DS64_IMG_MB:-64}"
+SEED=/run/ds64-seed
+BINDS=(
+    "bluetooth=/var/lib/bluetooth"
+    "nm=/etc/NetworkManager/system-connections"
+    "ds64=/etc/ds64"
+)
+
+say()  { printf '\n==> %s\n' "$*"; }
+ok()   { printf '    [ok] %s\n' "$*"; }
+chg()  { printf '    ->  %s\n' "$*"; }
+die()  { printf '\n[!] %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "Run as root: sudo ds64-lock"
+command -v raspi-config >/dev/null || die "raspi-config not found"
+[ -d "$(dirname "$IMG")" ] || die "$(dirname "$IMG") not found -- is this Raspberry Pi OS with a FAT boot partition?"
+
+NEED_REBOOT=0
+
+# --- overlayroot package (raspi-config needs it to enable the overlay) ---------
+say "overlayroot package"
+if dpkg -s overlayroot >/dev/null 2>&1; then
+    ok "already installed"
+else
+    chg "installing overlayroot"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y overlayroot
+fi
+
+# --- persistent image: create + seed ONCE, atomically --------------------------
+# The whole image is built at $IMG.new and only renamed onto $IMG as the final
+# step, so an interrupted/failed run leaves NO $IMG (the next run cleanly retries)
+# rather than a half-seeded image we would later harden on top of. Once $IMG
+# exists it is, by construction, fully seeded.
+say "Persistent store: $IMG"
+if [ -f "$IMG" ]; then
+    ok "image already exists (kept)"
+else
+    avail=$(df -Pm "$(dirname "$IMG")" | awk 'NR==2{print $4}')
+    [ "${avail:-0}" -gt "$((SIZE_MB + 16))" ] || \
+        die "not enough free space on $(dirname "$IMG") (${avail:-?}MB free, need >$((SIZE_MB + 16))MB)"
+
+    cleanup() { umount "$SEED" 2>/dev/null || true; rmdir "$SEED" 2>/dev/null || true; rm -f "$IMG.new"; }
+    trap cleanup EXIT
+
+    chg "creating ${SIZE_MB}MB fully-allocated image"
+    dd if=/dev/zero of="$IMG.new" bs=1M count="$SIZE_MB" status=none
+    mkfs.ext4 -q -F -L ds64data "$IMG.new"
+
+    chg "seeding from current bond / WiFi / config"
+    mkdir -p "$SEED"
+    mount -o loop "$IMG.new" "$SEED"
+    for entry in "${BINDS[@]}"; do
+        sub="${entry%%=*}"; target="${entry#*=}"
+        mkdir -p "$SEED/$sub"
+        if [ -d "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
+            cp -a "$target/." "$SEED/$sub/"
+        fi
+    done
+    # Enforce the perms BlueZ/NM require, else they silently ignore these dirs.
+    chown -R root:root "$SEED/bluetooth" "$SEED/nm" "$SEED/ds64"
+    chmod 700 "$SEED/bluetooth"
+    chmod 600 "$SEED"/nm/* 2>/dev/null || true
+    sync
+    umount "$SEED"
+    rmdir "$SEED" 2>/dev/null || true
+
+    mv -f "$IMG.new" "$IMG"
+    sync
+    trap - EXIT
+    NEED_REBOOT=1   # persist.service must bind before services -> needs a clean boot
+fi
+
+# --- enable + PROVE the boot-time mount before we commit to read-only root ------
+say "Persistence service"
+systemctl enable -q ds64-persist.service
+# Dry-run now (root still writable): if the binds don't come up, abort while we
+# can still recover, rather than rebooting into a read-only root with no WiFi.
+systemctl restart ds64-persist.service || die "ds64-persist.service failed -- system left writable"
+for entry in "${BINDS[@]}"; do
+    target="${entry#*=}"
+    mountpoint -q "$target" || die "persistent bind for $target is NOT active -- aborting, system left writable"
+done
+ok "bond / WiFi / config dirs are bound to the image"
+
+# --- drop file-backed swap (it would write the SD / sit on tmpfs under overlay) -
+say "Swap"
+if command -v dphys-swapfile >/dev/null 2>&1; then
+    dphys-swapfile swapoff 2>/dev/null || true
+    systemctl disable -q --now dphys-swapfile 2>/dev/null || true
+    ok "file-backed swap off (zram swap, if any, stays)"
+else
+    ok "no dphys-swapfile present"
+fi
+
+# --- enable the read-only overlay ----------------------------------------------
+# Use the granular enable_overlayfs, NOT the do_overlayfs wrapper: do_overlayfs
+# ALSO write-protects the boot partition (enable_bootro), which would make our
+# image on /boot/firmware unwritable and break persistence. enable_overlayfs only
+# adds overlayroot=tmpfs and leaves /boot RW (our fstab mounts it 'defaults').
+# It is idempotent (grep-guards the cmdline edit); decide the reboot from the
+# RUNNING state (get_overlay_now echoes 0 when the overlay is active).
+say "Read-only overlay"
+raspi-config nonint enable_overlayfs || die "failed to enable overlay -- system left writable"
+if [ "$(raspi-config nonint get_overlay_now)" = "0" ]; then
+    ok "overlay already active in the running kernel"
+else
+    chg "overlay enabled (activates on reboot)"
+    NEED_REBOOT=1
+fi
+
+# --- reboot --------------------------------------------------------------------
+if [ "$NEED_REBOOT" -eq 1 ]; then
+    say "Rebooting in 5s to activate -- Ctrl-C to cancel"
+    sleep 5
+    reboot
+else
+    say "Already hardened; nothing to reboot."
+fi

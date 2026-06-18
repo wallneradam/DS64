@@ -1,0 +1,48 @@
+#!/bin/bash
+# ds64-unlock -- leave appliance mode so the root filesystem is writable again.
+#
+# Disables the read-only overlay so OS updates / package installs persist (see
+# `overlayroot-chroot` for a no-reboot alternative). The persistent image stays
+# mounted, so WiFi / bond / config keep working and survive a later ds64-lock.
+# Re-harden with ds64-lock. Idempotent.
+set -euo pipefail
+
+say()  { printf '\n==> %s\n' "$*"; }
+ok()   { printf '    [ok] %s\n' "$*"; }
+chg()  { printf '    ->  %s\n' "$*"; }
+die()  { printf '\n[!] %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "Run as root: sudo ds64-unlock"
+command -v raspi-config >/dev/null || die "raspi-config not found"
+
+NEED_REBOOT=0
+
+# Mirror ds64-lock: use the granular disable_overlayfs (NOT do_overlayfs, which
+# also toggles the boot partition's read-only flag). It just removes
+# overlayroot=tmpfs from the cmdline and is idempotent; calling it unconditionally
+# also cancels a lock that was configured but not yet rebooted into. Decide the
+# reboot from the RUNNING state (get_overlay_now echoes 0 when active).
+say "Read-only overlay"
+raspi-config nonint disable_overlayfs || die "failed to disable overlay"
+if [ "$(raspi-config nonint get_overlay_now)" = "0" ]; then
+    chg "overlay disabled (drops on reboot)"
+    NEED_REBOOT=1
+else
+    ok "overlay already inactive in the running kernel"
+fi
+
+say "Swap"
+if systemctl list-unit-files dphys-swapfile.service >/dev/null 2>&1; then
+    systemctl enable -q --now dphys-swapfile 2>/dev/null || true
+    ok "restored dphys-swapfile"
+else
+    ok "no dphys-swapfile unit"
+fi
+
+if [ "$NEED_REBOOT" -eq 1 ]; then
+    say "Rebooting in 5s to drop the overlay -- Ctrl-C to cancel"
+    sleep 5
+    reboot
+else
+    say "Already writable; nothing to reboot."
+fi

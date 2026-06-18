@@ -1,0 +1,17 @@
+[Unit]
+Description=DS64 persistent store (bond + WiFi + config on a crash-safe image)
+# Skip cleanly until ds64-lock has created the image.
+ConditionPathExists=/boot/firmware/ds64-data.img
+# The image lives on the FAT boot partition -- it must be mounted first.
+RequiresMountsFor=/boot/firmware
+After=local-fs.target
+# Bind the persistent dirs in place BEFORE anything reads or writes them.
+Before=bluetooth.service NetworkManager.service ds64-gadget.service ds64-joyd.service ds64-web.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/ds64/setup/ds64-persist.sh
+
+[Install]
+WantedBy=multi-user.target
