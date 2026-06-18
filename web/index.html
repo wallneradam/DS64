@@ -27,8 +27,11 @@
        background:var(--hi); border:0; }
   input[type=range]::-moz-range-track { height:6px; border-radius:3px; background:var(--fg); }
   .tctl { display:inline-flex; align-items:center; gap:8px; }
-  .numbox { width:64px; background:transparent; color:var(--hi); border:2px solid var(--fg);
-            border-radius:6px; padding:5px 6px; font:inherit; text-align:right; }
+  .numbox { width:72px; background:transparent; color:var(--hi); border:2px solid var(--fg);
+            border-radius:6px; padding:5px 8px; font:inherit; text-align:right;
+            -moz-appearance:textfield; appearance:textfield; }
+  .numbox::-webkit-outer-spin-button, .numbox::-webkit-inner-spin-button {
+            -webkit-appearance:none; margin:0; }
   .hostbox { width:100%; background:transparent; color:var(--hi); border:2px solid var(--fg);
              border-radius:6px; padding:7px 9px; font:inherit; }
   .unit { color:var(--fg); }
@@ -154,6 +157,45 @@
       </span>
     </div>
   </div>
+
+  <div class="card">
+    <h2>MOUSE (TOUCHPAD)</h2>
+    <div class="row">
+      <span class="muted">touchpad &rarr; 1351 mouse (port 1)</span>
+      <span class="seg" id="touchpad_mouse">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row mopt">
+      <span class="muted">speed X (horizontal)</span>
+      <span class="tctl"><input type="range" id="msx" min="0.02" max="1" step="0.01">
+            <input type="number" id="msxval" class="numbox" min="0.02" max="3" step="0.01"></span>
+    </div>
+    <div class="row mopt">
+      <span class="muted">speed Y (vertical)</span>
+      <span class="tctl"><input type="range" id="msy" min="0.02" max="1" step="0.01">
+            <input type="number" id="msyval" class="numbox" min="0.02" max="3" step="0.01"></span>
+    </div>
+    <div class="row mopt">
+      <span class="muted">two fingers &rarr; right button</span>
+      <span class="seg" id="touchpad_two_finger_right">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row mopt">
+      <span class="muted">invert horizontal (X)</span>
+      <span class="seg" id="mouse_invert_x">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row mopt">
+      <span class="muted">invert vertical (Y)</span>
+      <span class="seg" id="mouse_invert_y">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="muted" style="margin-top:8px">The DS4/DS5 touchpad drives the GEOS cursor as a 1351 on port 1. Lower = slower; the pad is short vertically, so Y is usually a touch faster than X.</div>
+  </div>
 </div>
 
 <div class="modal" id="logmodal">
@@ -178,6 +220,14 @@ function paintConfig(c) {
   paintSeg('mode', c.mode);
   paintSeg('ps_menu', c.ps_menu ? 1 : 0);
   paintSeg('circle_left', c.circle_left ? 1 : 0);
+  paintSeg('touchpad_mouse', c.touchpad_mouse ? 1 : 0);
+  paintSeg('touchpad_two_finger_right', c.touchpad_two_finger_right ? 1 : 0);
+  paintSeg('mouse_invert_x', c.mouse_invert_x ? 1 : 0);
+  paintSeg('mouse_invert_y', c.mouse_invert_y ? 1 : 0);
+  const sx = Number(c.mouse_sensitivity_x), sy = Number(c.mouse_sensitivity_y);
+  $('#msx').value = Math.min(1, Math.max(0.02, sx)); $('#msxval').value = sx;
+  $('#msy').value = Math.min(1, Math.max(0.02, sy)); $('#msyval').value = sy;
+  document.querySelectorAll('.mopt').forEach(r => r.style.display = c.touchpad_mouse ? '' : 'none');
   $('#timeout').value = Math.min(10, Math.max(0.5, Number(c.idle_timeout)));
   $('#toval').value = Number(c.idle_timeout);
   const auto = c.mode === 'auto';
@@ -230,6 +280,25 @@ $('#toval').onchange = e => {
   $('#timeout').value = Math.min(10, v);
   save({idle_timeout: v});
 };
+
+['touchpad_mouse', 'touchpad_two_finger_right', 'mouse_invert_x', 'mouse_invert_y'].forEach(id =>
+  document.querySelectorAll('#' + id + ' button').forEach(b =>
+    b.onclick = () => save({[id]: b.dataset.v === '1'})));
+
+function bindSensitivity(slider, box, key) {
+  $(slider).oninput = e => { $(box).value = e.target.value; };
+  $(slider).onchange = e => save({[key]: Number(e.target.value)});
+  $(box).onchange = e => {
+    let v = Number(e.target.value);
+    if (!isFinite(v)) { paintConfig(cfg); return; }
+    v = Math.max(0.02, Math.min(3, v));
+    e.target.value = v;
+    $(slider).value = Math.min(1, v);
+    save({[key]: v});
+  };
+}
+bindSensitivity('#msx', '#msxval', 'mouse_sensitivity_x');
+bindSensitivity('#msy', '#msyval', 'mouse_sensitivity_y');
 
 let lastLog = '';
 function setResult(html, cls) { const el = $('#pairresult'); el.innerHTML = html; el.className = cls || 'muted'; }

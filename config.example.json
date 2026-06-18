@@ -6,5 +6,11 @@
   "active_color": [0, 255, 0],
   "idle_color": [0, 0, 255],
   "ps_menu": true,
-  "circle_left": true
+  "circle_left": true,
+  "touchpad_mouse": true,
+  "mouse_sensitivity_x": 0.15,
+  "mouse_sensitivity_y": 0.2,
+  "touchpad_two_finger_right": true,
+  "mouse_invert_x": false,
+  "mouse_invert_y": false
 }

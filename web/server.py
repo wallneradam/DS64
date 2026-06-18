@@ -33,6 +33,12 @@ DEFAULTS = {
     "idle_color": [0, 0, 255],
     "ps_menu": True,
     "circle_left": True,
+    "touchpad_mouse": True,
+    "mouse_sensitivity_x": 0.15,
+    "mouse_sensitivity_y": 0.2,
+    "touchpad_two_finger_right": True,
+    "mouse_invert_x": False,
+    "mouse_invert_y": False,
 }
 
 
@@ -295,9 +301,13 @@ class Handler(BaseHTTPRequestHandler):
                 cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
             if "u64_host" in data and str(data["u64_host"]).strip():
                 cfg["u64_host"] = str(data["u64_host"]).strip()
-            for flag in ("ps_menu", "circle_left"):
+            for flag in ("ps_menu", "circle_left", "touchpad_mouse",
+                         "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y"):
                 if flag in data:
                     cfg[flag] = bool(data[flag])
+            for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y"):
+                if axis in data:
+                    cfg[axis] = max(0.02, min(3.0, float(data[axis])))
             write_config(cfg)
             self._json({"ok": True, "config": cfg})
         elif self.path == "/api/pair":
