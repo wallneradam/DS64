@@ -235,15 +235,17 @@ class Bridge:
         self.last_buttons = 0
         self.accum_x = 0.0           # fractional carry, so slow drags are not lost
         self.accum_y = 0.0
-        if self.cfg.get("touchpad_mouse", True):
-            tp_dev = find_touchpad()
-            if tp_dev is not None:
-                self.tp = Touchpad(tp_dev)
-                try:
-                    self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
-                except OSError as ex:
-                    print("mouse gadget open failed:", ex, file=sys.stderr)
-                print("Touchpad:", tp_dev.name, tp_dev.path, file=sys.stderr)
+        # Always bind the touchpad if one is present; whether its motion is sent is
+        # gated live by the touchpad_mouse config (see poll_touchpad), so the mouse
+        # switches on and off from the web panel without restarting joyd.
+        tp_dev = find_touchpad()
+        if tp_dev is not None:
+            self.tp = Touchpad(tp_dev)
+            try:
+                self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as ex:
+                print("mouse gadget open failed:", ex, file=sys.stderr)
+            print("Touchpad:", tp_dev.name, tp_dev.path, file=sys.stderr)
 
     # --- config ---
     def _mtime(self):
@@ -366,7 +368,19 @@ class Bridge:
             print("touchpad lost:", ex, file=sys.stderr)
             self.drop_touchpad()
             return
+        # Drain the events above even when disabled (so re-enabling never jumps the
+        # cursor), but only turn them into mouse reports while the mouse is on.
+        if not self.cfg.get("touchpad_mouse", True):
+            self.mouse_off()
+            return
         self.emit_mouse(dx, dy, left, right)
+
+    def mouse_off(self):
+        """Mouse switched off at runtime: drop any carried motion and release a
+        held button once, so the C64 never sees a stuck 1351 button."""
+        self.accum_x = self.accum_y = 0.0
+        if self.last_buttons and self._emit("mouse", bytes(3)):
+            self.last_buttons = 0
 
     def emit_mouse(self, dx, dy, left, right):
         if self.cfg.get("mouse_invert_x", False):

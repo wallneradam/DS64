@@ -308,6 +308,16 @@ class Handler(BaseHTTPRequestHandler):
             for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y"):
                 if axis in data:
                     cfg[axis] = max(0.02, min(3.0, float(data[axis])))
+            # The U64 hardwires a USB mouse to control port 1, so the 1351 mouse and
+            # a port-1 joystick can't share it. Keep them mutually exclusive,
+            # favouring whichever the user just changed: enabling the mouse frees
+            # port 1 by moving the joystick to port 2; choosing port 1 for the
+            # joystick turns the mouse off.
+            if cfg.get("touchpad_mouse") and int(cfg.get("port", 2)) == 1:
+                if "touchpad_mouse" in data and bool(data["touchpad_mouse"]):
+                    cfg["port"] = 2
+                else:
+                    cfg["touchpad_mouse"] = False
             write_config(cfg)
             self._json({"ok": True, "config": cfg})
         elif self.path == "/api/pair":
