@@ -86,10 +86,24 @@ def find_controller():
 
 
 def find_leds():
-    """Locate the controller's R/G/B lightbar LED class devices, if any."""
+    """Locate the controller's lightbar LED class devices, if any.
+
+    Two kernel layouts exist:
+      * DualShock 4 (hid-playstation): separate ``*:red``/``*:green``/``*:blue``
+        channels plus a ``*:global`` master brightness.
+      * DualSense (hid-playstation): a single multicolor LED ``*:rgb:indicator``
+        with a ``multi_intensity`` ("R G B") file and a master ``brightness``.
+    """
+    for dev in glob.glob("/sys/class/leds/*:rgb:*"):
+        return {
+            "kind": "multi",
+            "intensity": dev + "/multi_intensity",
+            "brightness": dev + "/brightness",
+        }
     for red in glob.glob("/sys/class/leds/*:red"):
         base = red.rsplit(":", 1)[0]
         return {
+            "kind": "channels",
             "red": base + ":red/brightness",
             "green": base + ":green/brightness",
             "blue": base + ":blue/brightness",
@@ -200,6 +214,12 @@ class Bridge:
         if not self.leds:
             return
         try:
+            if self.leds["kind"] == "multi":
+                with open(self.leds["intensity"], "w") as f:
+                    f.write("%d %d %d" % tuple(int(v) for v in rgb))
+                with open(self.leds["brightness"], "w") as f:
+                    f.write("255")
+                return
             g = self.leds.get("global")
             if g and os.path.exists(g):
                 with open(g, "w") as f:
