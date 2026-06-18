@@ -57,6 +57,14 @@ echo "Found controller: $MAC"
 # Pair from ONE kept-alive (interactive) bluetoothctl session. The sleeps hold the
 # session open until each step finishes, which is what makes it count as interactive.
 #
+# CRITICAL first wait: bluetoothctl connects to bluetoothd asynchronously after it
+# starts. When commands are piped in, it reads them immediately and runs the first
+# one BEFORE that connection is up -- 'agent on' then fails ("Failed to register
+# agent object"), no agent answers the controller's pairing, the link key arrives
+# with store_hint=0 (BlueZ won't persist it) and the bond is not durable. The
+# leading sleep lets the connection settle first; with it the agent registers,
+# pairing reports store_hint=1 and BlueZ writes the key to disk itself.
+#
 # CRITICAL ordering: trust BEFORE pair. After pairing, the controller immediately
 # opens its HID input service; BlueZ asks input/server.c:auth_callback() to
 # authorize it. If the device isn't trusted at that instant (and no agent answers),
@@ -66,14 +74,17 @@ echo "Found controller: $MAC"
 # auto-succeed. We trust again after pair so Trusted=true is written to the info
 # file (it persists the auto-authorize for every future reconnect, agent-free).
 {
-  printf 'agent on\n';          sleep 0.4
-  printf 'default-agent\n';     sleep 0.4
+  sleep 1.5                         # let bluetoothctl reach bluetoothd before any command
+  printf 'agent on\n';          sleep 0.5
+  printf 'default-agent\n';     sleep 0.5
   printf 'trust %s\n'   "$MAC"; sleep 0.6
   printf 'pair %s\n'    "$MAC"; sleep 8
   printf 'trust %s\n'   "$MAC"; sleep 0.6
   printf 'connect %s\n' "$MAC"; sleep 4
   printf 'quit\n'
-} | bluetoothctl 2>&1 | grep -iE "Pairing successful|Failed|trust succeeded|Connection successful" | sed 's/^/  /'
+} | bluetoothctl 2>&1 \
+  | grep -iE "Pairing successful|Failed|trust succeeded|Connection successful" \
+  | grep -viE "in progress" | sed 's/^/  /'
 
 sleep 1
 kill "$BTMON_PID" 2>/dev/null; wait "$BTMON_PID" 2>/dev/null
@@ -84,9 +95,9 @@ if has_linkkey "$MAC"; then
 else
   echo "BlueZ did not persist the key (store_hint=0); falling back to capturing it from btmon..."
   echo "=== btmon link-key lines (diagnostics) ==="
-  grep -iE "Link key\[|Key type:|Store hint:" "$BTMON_LOG" | sed 's/^/  /'
-  KEY=$(grep -i "Link key\[" "$BTMON_LOG" | grep -ioE "[0-9a-f]{32}" | tail -1 | tr 'a-f' 'A-F')
-  KTYPE_HEX=$(grep -i "Key type:" "$BTMON_LOG" | grep -oiE "0x0[0-9a-f]" | tail -1)
+  grep -iE "Link key[][0-9:]*|Key type:|Store hint:" "$BTMON_LOG" | sed 's/^/  /'
+  KEY=$(grep -iE "Link key(\[[0-9]+\])?:" "$BTMON_LOG" | grep -ioE "[0-9a-f]{32}" | tail -1 | tr 'a-f' 'A-F')
+  KTYPE_HEX=$(grep -i "Key type:" "$BTMON_LOG" | grep -oiE "0x[0-9a-f]{2}" | tail -1)
   [ -n "$KTYPE_HEX" ] && KTYPE=$((KTYPE_HEX)) || KTYPE=4
   rm -f "$BTMON_LOG"
   if [ -z "$KEY" ]; then
