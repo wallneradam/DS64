@@ -31,7 +31,7 @@ DEFAULTS = {
     "u64_host": "192.168.5.64",
     "active_color": [0, 255, 0],
     "idle_color": [0, 0, 255],
-    "triangle_menu": True,
+    "ps_menu": True,
     "circle_left": True,
 }
 
@@ -295,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                 cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
             if "u64_host" in data and str(data["u64_host"]).strip():
                 cfg["u64_host"] = str(data["u64_host"]).strip()
-            for flag in ("triangle_menu", "circle_left"):
+            for flag in ("ps_menu", "circle_left"):
                 if flag in data:
                     cfg[flag] = bool(data[flag])
             write_config(cfg)

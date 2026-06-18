@@ -142,8 +142,8 @@
   <div class="card">
     <h2>EXTRA BUTTONS</h2>
     <div class="row">
-      <span class="muted">triangle &rarr; U64 menu (F10)</span>
-      <span class="seg" id="triangle_menu">
+      <span class="muted">PS button &rarr; U64 menu (F10)</span>
+      <span class="seg" id="ps_menu">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
@@ -176,15 +176,15 @@ function paintConfig(c) {
   cfg = c;
   paintSeg('port', c.port);
   paintSeg('mode', c.mode);
-  paintSeg('triangle_menu', c.triangle_menu ? 1 : 0);
+  paintSeg('ps_menu', c.ps_menu ? 1 : 0);
   paintSeg('circle_left', c.circle_left ? 1 : 0);
   $('#timeout').value = Math.min(10, Math.max(0.5, Number(c.idle_timeout)));
   $('#toval').value = Number(c.idle_timeout);
   const auto = c.mode === 'auto';
   $('#timeoutrow').style.display = auto ? '' : 'flex';
   $('#modehelp').textContent = auto
-    ? 'Any stick/D-pad/fire input turns the joystick on; it turns off after the idle time. PS button forces off.'
-    : 'The PS button toggles the joystick on and off. Input alone never switches it.';
+    ? 'Any stick/D-pad/fire input turns the joystick on; it turns off after the idle time. Triangle forces off.'
+    : 'The triangle button toggles the joystick on and off. Input alone never switches it.';
 }
 
 async function save(patch) {
@@ -216,8 +216,8 @@ document.querySelectorAll('#port button').forEach(b =>
   b.onclick = () => save({port: Number(b.dataset.v)}));
 document.querySelectorAll('#mode button').forEach(b =>
   b.onclick = () => save({mode: b.dataset.v}));
-document.querySelectorAll('#triangle_menu button').forEach(b =>
-  b.onclick = () => save({triangle_menu: b.dataset.v === '1'}));
+document.querySelectorAll('#ps_menu button').forEach(b =>
+  b.onclick = () => save({ps_menu: b.dataset.v === '1'}));
 document.querySelectorAll('#circle_left button').forEach(b =>
   b.onclick = () => save({circle_left: b.dataset.v === '1'}));
 $('#timeout').oninput = e => { $('#toval').value = e.target.value; };

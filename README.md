@@ -131,14 +131,15 @@ The panel's **MODE** switch decides how the joystick turns on and off:
 - **AUTO** (default) — any stick / D-pad / fire input turns the joystick **on**;
   after a short idle time it turns **off** again, so **W/A/S/D go back to being
   normal keys** for typing. The idle time is adjustable in the panel (a couple of
-  seconds by default, up to a few minutes). Pressing **PS** turns it off while
-  you're playing. This is the "play, then type, then play" mode — best for most use.
-- **MANUAL** — the **PS** button toggles the joystick on and off; input alone
-  never switches it. Use this if you want the joystick to stay on regardless.
+  seconds by default, up to a few minutes). Pressing **Triangle** turns it off
+  while you're playing. This is the "play, then type, then play" mode — best for
+  most use.
+- **MANUAL** — the **Triangle** button toggles the joystick on and off; input
+  alone never switches it. Use this if you want the joystick to stay on regardless.
 
 **Extra buttons** (each can be turned off in the panel):
 
-- **Triangle** opens the **U64 menu** (sends F10).
+- **PS button** opens the **U64 menu** (sends F10 on release).
 - **Circle** acts as **Left** — the "back" direction inside the U64 menu.
 
 ## Compatible controllers
