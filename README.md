@@ -133,9 +133,10 @@ Bluetooth bonding policy, and installs + enables the background services (the US
 keyboard, the bridge daemon, the web panel, and helpers that keep the C64 link and
 controller reconnect reliable). It then prints the address of the web panel.
 
-When it finishes, the installer may print a `sudo reboot` line — if it does, run it
-yourself (USB gadget mode needs one reboot the first time). Later re-runs don't ask
-for a reboot.
+On the **first** install USB gadget mode needs **one reboot** to activate, so when
+it finishes the installer offers to reboot for you — just press **ENTER** (or
+Ctrl-C to do it later with `sudo reboot`). The **web panel only responds after that
+reboot**. Later re-runs apply straight away and don't reboot.
 
 - **Update later:** re-run the exact same command — it just pulls the latest
   version and restarts the services. Re-running is always safe; it only fixes

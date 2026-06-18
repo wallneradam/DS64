@@ -162,14 +162,34 @@ fi
 # --- summary -------------------------------------------------------------------
 ip=$(hostname -I 2>/dev/null | awk '{print $1}') || ip=
 host=$(hostname 2>/dev/null || echo raspberrypi)
-say "Done."
+bar=$(printf '─%.0s' {1..58})
+
+printf '\n  ┌%s┐\n'   "$bar"
+printf   '  │  %-56s│\n' "DS64 installed"
+printf   '  └%s┘\n\n' "$bar"
+
+printf '    Web UI        http://%s:8080/\n'   "${ip:-<pi-ip>}"
+printf '                  http://%s.local:8080/\n\n' "$host"
+printf '    Pair a pad    open the Web UI, or run:\n'
+printf '                  bash %s/scripts/pair-ds4.sh\n\n' "$DEST"
+printf '    Harden        make it power-loss proof once it all works:\n'
+printf '                  sudo ds64-lock     # read-only + persistent store\n'
+printf '                  sudo ds64-unlock   # undo, e.g. to update the OS\n\n'
+printf '    Update later  re-run this installer (git-pulls + restarts)\n'
+
 if [ "$REBOOT_NEEDED" -eq 1 ]; then
-    printf '    USB gadget mode was just enabled -- reboot to activate it:\n'
-    printf '        sudo reboot\n'
+    printf '\n  %s\n' "$bar"
+    printf '    ! ONE reboot is needed to activate USB gadget mode.\n'
+    printf '      The Web UI above will not respond until the Pi reboots.\n'
+    printf '  %s\n' "$bar"
+    if [ -t 1 ] && [ -e /dev/tty ]; then
+        printf '\n    Press ENTER to reboot now  (Ctrl-C to reboot later yourself) '
+        read -r _ < /dev/tty || true
+        printf '\n    Rebooting...\n'
+        reboot
+    else
+        printf '\n    Reboot when ready:  sudo reboot\n'
+    fi
+else
+    printf '\n    Ready to use now -- open the Web UI above.\n'
 fi
-printf '    Web UI:        http://%s:8080/   (also http://%s.local:8080/)\n' "${ip:-<pi-ip>}" "$host"
-printf '    Pair a pad:    open the web UI, or  bash %s/scripts/pair-ds4.sh\n' "$DEST"
-printf '    Harden (read-only, power-loss proof) when it all works:\n'
-printf '        sudo ds64-lock      # enable overlay + persistent store (one reboot)\n'
-printf '        sudo ds64-unlock    # undo, e.g. to update the OS\n'
-printf '    Update later:  re-run this installer (it just git-pulls + restarts).\n'
