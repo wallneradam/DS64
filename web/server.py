@@ -41,7 +41,8 @@ DEFAULTS = {
     "idle_color": [0, 0, 255],
     "ps_menu": True,
     "circle_left": True,
-    "square_f1": True,
+    "options_f1": True,
+    "share_swap": True,
     "touchpad_mouse": True,
     "mouse_sensitivity_x": 0.15,
     "mouse_sensitivity_y": 0.2,
@@ -466,7 +467,7 @@ async def post_config(request):
         cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
     if "u64_host" in data and str(data["u64_host"]).strip():
         cfg["u64_host"] = str(data["u64_host"]).strip()
-    for flag in ("ps_menu", "circle_left", "square_f1", "touchpad_mouse",
+    for flag in ("ps_menu", "circle_left", "options_f1", "share_swap", "touchpad_mouse",
                  "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y"):
         if flag in data:
             cfg[flag] = bool(data[flag])

@@ -16,7 +16,8 @@ Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
 Optional extra buttons (each toggled in the config):
   PS button -> toggle the U64 menu on release (via the menu_button API)
   circle    -> Left (the "back" direction inside the U64 menu)
-  square    -> F1 (a C64 function key, sent over the keyboard gadget)
+  options   -> F1 (a C64 function key, sent over the keyboard gadget)
+  share     -> swap the joystick between control port 1 and 2 (writes the config)
 
 Modes (from the shared config file, live-reloaded):
   auto   - any real input switches the U64 into WASD mode; after `idle_timeout`
@@ -72,7 +73,8 @@ DEFAULTS = {
     "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
     "ps_menu": True,               # PS button -> toggle the U64 menu (menu_button API)
     "circle_left": True,           # circle -> Left (back in the U64 menu)
-    "square_f1": True,             # square -> F1 (a C64 function key)
+    "options_f1": True,            # options -> F1 (a C64 function key)
+    "share_swap": True,            # share -> swap the joystick port 1 <-> 2
     "touchpad_mouse": True,             # touchpad -> Commodore 1351 mouse (port 1)
     "mouse_sensitivity_x": 0.15,        # horizontal scale on the raw touchpad deltas
     "mouse_sensitivity_y": 0.2,         # vertical scale (the pad is short in Y -> a touch faster)
@@ -94,6 +96,16 @@ def load_config():
     except Exception as ex:
         print("config read error:", ex, file=sys.stderr)
     return cfg
+
+
+def write_config(cfg):
+    """Atomically persist the shared config the same way (path + format) the web
+    panel does, so a daemon-side change is indistinguishable from a web edit."""
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CONFIG)
 
 
 def find_controller():
@@ -223,7 +235,7 @@ class Bridge:
                    E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0}
         self.fire_down = set()
         self.circle = False
-        self.f1_down = False         # square held -> F1 keycode in the keyboard report
+        self.f1_down = False         # options held -> F1 keycode in the keyboard report
         self.ps_held = False         # while the PS button is held, suppress all other input
         # Two independent HID gadget fds, one per interface. O_NONBLOCK so a write
         # can never freeze the bridge if the C64 stops draining an endpoint -- a
@@ -308,7 +320,7 @@ class Bridge:
     def send_keys(self):
         keys = []
         # WASD only in joystick mode (otherwise the letters would type), but F1 is a
-        # function key -> it is sent whenever square is held, joystick on or off.
+        # function key -> it is sent whenever options is held, joystick on or off.
         if self.wasd_on:
             up, down, left, right, fire = self.state()
             if up: keys.append(W)
@@ -316,7 +328,7 @@ class Bridge:
             if left: keys.append(A)
             if right: keys.append(D)
             if fire: keys.append(RET)
-        if self.f1_down and self.cfg.get("square_f1", True):
+        if self.f1_down and self.cfg.get("options_f1", True):
             keys.append(F1)
         keys = keys[:6]
         # Standard 8-byte boot-keyboard payload: modifiers, reserved, 6 keycodes.
@@ -513,6 +525,23 @@ class Bridge:
         # real input turns it straight back on (react() handles that next tick).
         self.set_wasd(not self.wasd_on)
 
+    def swap_port(self):
+        """Share button: flip the joystick between control port 1 and 2, exactly
+        like clicking PORT1/PORT2 in the web panel. It writes the shared config
+        file; reload_config_if_changed then re-applies the swapper and refreshes
+        status.json on the next tick, and the web UI follows over its SSE stream.
+        Useful in couch mode when a game wants the joystick on Joy1."""
+        cfg = load_config()
+        new_port = 1 if int(cfg.get("port", 2)) == 2 else 2
+        cfg["port"] = new_port
+        # The U64 hardwires a USB mouse to control port 1, so a port-1 joystick and
+        # the 1351 mouse can't share it: moving the joystick to port 1 frees it by
+        # turning the touchpad mouse off (mirrors web/server.py post_config).
+        if new_port == 1 and cfg.get("touchpad_mouse"):
+            cfg["touchpad_mouse"] = False
+        write_config(cfg)
+        print("share -> swap to port", new_port, file=sys.stderr)
+
     def menu_tap(self):
         """Toggle the U64 menu via the menu_button API, which simulates the
         physical menu button -- the firmware's real open/close toggle. A USB
@@ -617,8 +646,12 @@ class Bridge:
                 self.fire_down.discard(e.code)
         elif e.type == E.EV_KEY and e.code == E.BTN_EAST:  # circle
             self.circle = bool(e.value)
-        elif e.type == E.EV_KEY and e.code == E.BTN_WEST:  # square -> F1
+        elif e.type == E.EV_KEY and e.code == E.BTN_START:  # options -> F1
             self.f1_down = bool(e.value)
+        elif e.type == E.EV_KEY and e.code == E.BTN_SELECT:  # share -> swap port 1<->2
+            if e.value == 1 and self.cfg.get("share_swap", True):
+                self.swap_port()
+            return
         else:
             return
         self.react(now)

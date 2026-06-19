@@ -10,6 +10,10 @@
   body { margin:0; background:var(--bg); color:var(--hi);
          font-family: "Menlo","Consolas",monospace; line-height:1.5; }
   .wrap { max-width:560px; margin:0 auto; padding:24px 18px 60px; }
+  .brand { text-align:center; margin:0 0 18px; }
+  .padart { display:inline-block; margin:0 0 8px; color:var(--hi);
+            font-size:.72rem; line-height:1.05; letter-spacing:0; text-align:left;
+            white-space:pre; text-shadow:0 0 10px rgba(176,164,255,.18); }
   h1 { font-size:1.8rem; letter-spacing:2px; margin:.2em 0 0; }
   .sub { color:var(--fg); margin:.2em 0 1.4em; font-size:.85rem; }
   .card { border:2px solid var(--fg); border-radius:8px; padding:16px 18px; margin:0 0 18px; }
@@ -74,8 +78,19 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>DS64</h1>
-  <div class="sub">a game controller as a C64 Ultimate joystick</div>
+  <header class="brand">
+    <pre class="padart" aria-label="PETSCII-style DS4 controller">
+    .-====[ L1 ]====[ R1 ]====-.
+ .-'  _    o .--------. o   ^   '-.
+.'  _| |_    |  DS64  |   [] O    '.
+/  |_   _|   '--------'     X      \
+|    |_|         ()                |
+|         .----.    .----.         |
+\   ._____( L3 )____( R3 )____.   /
+ '._'     '----'    '----'     '_.'</pre>
+    <h1>DS64</h1>
+    <div class="sub">a game controller as a C64 Ultimate joystick and mouse</div>
+  </header>
 
   <div class="card">
     <h2>C64 CONNECTION</h2>
@@ -158,8 +173,14 @@
       </span>
     </div>
     <div class="row">
-      <span class="muted">square &rarr; F1 key</span>
-      <span class="seg" id="square_f1">
+      <span class="muted">options &rarr; F1 key</span>
+      <span class="seg" id="options_f1">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="muted">share &rarr; swap Joy1/Joy2</span>
+      <span class="seg" id="share_swap">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
@@ -227,7 +248,8 @@ function paintConfig(c) {
   paintSeg('mode', c.mode);
   paintSeg('ps_menu', c.ps_menu ? 1 : 0);
   paintSeg('circle_left', c.circle_left ? 1 : 0);
-  paintSeg('square_f1', c.square_f1 ? 1 : 0);
+  paintSeg('options_f1', c.options_f1 ? 1 : 0);
+  paintSeg('share_swap', c.share_swap ? 1 : 0);
   paintSeg('touchpad_mouse', c.touchpad_mouse ? 1 : 0);
   paintSeg('touchpad_two_finger_right', c.touchpad_two_finger_right ? 1 : 0);
   paintSeg('mouse_invert_x', c.mouse_invert_x ? 1 : 0);
@@ -274,8 +296,10 @@ document.querySelectorAll('#ps_menu button').forEach(b =>
   b.onclick = () => save({ps_menu: b.dataset.v === '1'}));
 document.querySelectorAll('#circle_left button').forEach(b =>
   b.onclick = () => save({circle_left: b.dataset.v === '1'}));
-document.querySelectorAll('#square_f1 button').forEach(b =>
-  b.onclick = () => save({square_f1: b.dataset.v === '1'}));
+document.querySelectorAll('#options_f1 button').forEach(b =>
+  b.onclick = () => save({options_f1: b.dataset.v === '1'}));
+document.querySelectorAll('#share_swap button').forEach(b =>
+  b.onclick = () => save({share_swap: b.dataset.v === '1'}));
 $('#timeout').oninput = e => { $('#toval').value = e.target.value; };
 $('#timeout').onchange = e => save({idle_timeout: Number(e.target.value)});
 $('#toval').onchange = e => {

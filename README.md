@@ -198,8 +198,11 @@ The panel's **MODE** switch decides how the joystick turns on and off:
 
 - **PS button** opens the **U64 menu** (sends F10 on release).
 - **Circle** acts as **Left** — the "back" direction inside the U64 menu.
-- **Square** acts as the **F1 key** — held alongside the joystick, so it works
+- **Options** acts as the **F1 key** — held alongside the joystick, so it works
   whether the joystick is on or off.
+- **Share** swaps the joystick between **Port 1** and **Port 2** — the same as
+  picking the port in the panel, so couch players can move to **Joy1** without
+  reaching for the web UI.
 
 ## Mouse (touchpad)
 
