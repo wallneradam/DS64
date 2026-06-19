@@ -5,8 +5,9 @@
 # When the read-only overlay is enabled, the root filesystem is RAM-backed and
 # discards writes on reboot; this brings back a small journaled ext4 image (a
 # plain file on the FAT boot partition) and bind-mounts onto it exactly the dirs
-# that must survive a power-off: the controller bond, the WiFi profiles and the
-# app config. With the overlay off it is harmless -- it just relocates those dirs
+# that must survive a power-off: the controller bond, the WiFi profiles, the app
+# config AND the app code (/opt/ds64, so `ds64-update` can git-pull it without a
+# reboot). With the overlay off it is harmless -- it just relocates those dirs
 # onto the (more crash-safe) image. The image is created + seeded by ds64-lock;
 # if it does not exist yet this script is a no-op.
 set -u
@@ -19,6 +20,7 @@ BINDS=(
     "bluetooth=/var/lib/bluetooth"
     "nm=/etc/NetworkManager/system-connections"
     "ds64=/etc/ds64"
+    "opt=/opt/ds64"
 )
 
 [ -f "$IMG" ] || { echo "ds64-persist: $IMG absent -- nothing to mount"; exit 0; }
@@ -35,6 +37,14 @@ for entry in "${BINDS[@]}"; do
     src="$MNT/$sub"
     mkdir -p "$src" "$target"
     if mountpoint -q "$target"; then
+        continue
+    fi
+    # /opt/ds64 carries the app code: only relocate it onto the image once the
+    # image actually holds a copy (seeded by ds64-lock). Binding an empty src
+    # would hide the code and break every service -- so leave it on the root
+    # until a (re-)lock seeds it. The config dirs may legitimately start empty.
+    if [ "$sub" = opt ] && [ -z "$(ls -A "$src" 2>/dev/null)" ]; then
+        echo "ds64-persist: image has no /opt seed yet -- leaving $target on root"
         continue
     fi
     if ! mount --bind "$src" "$target"; then

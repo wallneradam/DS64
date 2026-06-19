@@ -1,0 +1,78 @@
+#!/bin/bash
+# ds64-update -- pull the latest DS64 code and restart, WITHOUT a reboot.
+#
+# Works while the appliance is locked (read-only root) because ds64-lock relocates
+# /opt/ds64 onto the writable persistent image, so a git-pull there sticks. It
+# updates ONLY the application code (controller bridge, web UI, scripts, USB gadget
+# setup). Changes that need a writable root or a reboot are NOT applied here and
+# are reported instead -- systemd unit files, the installer's config.txt / package
+# logic, and ds64-persist itself. For those, run the full reinstall:
+#     sudo ds64-unlock                                   # disables overlay, reboots
+#     curl -fsSL .../install.sh | sudo bash              # updates + re-hardens
+set -euo pipefail
+
+DEST="${DS64_DEST:-/opt/ds64}"
+BRANCH="${DS64_BRANCH:-main}"
+UNITS=(ds64-gadget ds64-joyd ds64-web)
+# Repo paths whose changes a code restart does NOT apply (need a full reinstall).
+STRUCT_RE='^(setup/systemd/|install\.sh$|setup/ds64-(lock|unlock|persist\.sh)$|setup/ds64-update$)'
+
+say()  { printf '\n==> %s\n' "$*"; }
+ok()   { printf '    [ok] %s\n' "$*"; }
+chg()  { printf '    ->  %s\n' "$*"; }
+warn() { printf '    [!] %s\n' "$*" >&2; }
+die()  { printf '\n[!] %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "Run as root: sudo ds64-update"
+[ -d "$DEST/.git" ] || die "$DEST is not a git checkout -- run the installer first"
+
+# The reboot-free path needs $DEST to be writable. When the appliance is locked,
+# that is true ONLY if ds64-lock relocated it onto the persistent image (a bind
+# mount). On a locked root that is not the case -> the pull would land on tmpfs
+# and vanish on reboot, so refuse and point at the one-time migration.
+overlay_active=0
+[ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = overlay ] && overlay_active=1
+if command -v raspi-config >/dev/null 2>&1 \
+   && [ "$(raspi-config nonint get_overlay_now 2>/dev/null)" = "0" ]; then
+    overlay_active=1
+fi
+if [ "$overlay_active" -eq 1 ] && ! mountpoint -q "$DEST"; then
+    die "Appliance is locked but $DEST is on the read-only root -- an update would
+    not persist. Migrate it onto the persistent store once (no reinstall needed):
+        sudo ds64-lock
+    then re-run  sudo ds64-update."
+fi
+
+say "Source: $DEST ($BRANCH)"
+git -C "$DEST" remote get-url origin >/dev/null 2>&1 \
+    || die "$DEST has no 'origin' remote -- run the installer first"
+before=$(git -C "$DEST" rev-parse HEAD)
+git -C "$DEST" fetch -q --depth=1 origin "$BRANCH"
+after=$(git -C "$DEST" rev-parse "origin/$BRANCH")
+if [ "$before" = "$after" ]; then
+    ok "already up to date (${after:0:7})"
+    exit 0
+fi
+
+# What changed? Capture BEFORE the reset, while both trees are still present.
+changed=$(git -C "$DEST" diff --name-only "$before" "$after")
+git -C "$DEST" reset -q --hard "origin/$BRANCH"
+git -C "$DEST" clean -qfd
+chg "updated ${before:0:7} -> ${after:0:7}"
+
+say "Restarting services"
+systemctl restart "${UNITS[@]}"
+ok "restarted: ${UNITS[*]}"
+
+# Flag changes a code restart cannot apply, so the user knows a full reinstall is
+# still owed for them (the code itself is now current either way).
+struct=$(printf '%s\n' "$changed" | grep -E "$STRUCT_RE" || true)
+if [ -n "$struct" ]; then
+    say "Heads-up"
+    warn "these files changed but a code restart does NOT apply them:"
+    printf '%s\n' "$struct" | sed 's/^/        /'
+    warn "to apply unit / installer / persist changes, run the full reinstall:"
+    warn "    sudo ds64-unlock   then   curl -fsSL .../install.sh | sudo bash"
+else
+    say "Done -- running ${after:0:7}, no reboot needed."
+fi

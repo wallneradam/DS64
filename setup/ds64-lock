@@ -11,10 +11,12 @@ set -euo pipefail
 IMG="${DS64_IMG:-/boot/firmware/ds64-data.img}"
 SIZE_MB="${DS64_IMG_MB:-64}"
 SEED=/run/ds64-seed
+PERSIST_MNT="${DS64_MNT:-/run/ds64-persist}"
 BINDS=(
     "bluetooth=/var/lib/bluetooth"
     "nm=/etc/NetworkManager/system-connections"
     "ds64=/etc/ds64"
+    "opt=/opt/ds64"
 )
 
 say()  { printf '\n==> %s\n' "$*"; }
@@ -69,7 +71,7 @@ else
         fi
     done
     # Enforce the perms BlueZ/NM require, else they silently ignore these dirs.
-    chown -R root:root "$SEED/bluetooth" "$SEED/nm" "$SEED/ds64"
+    chown -R root:root "$SEED/bluetooth" "$SEED/nm" "$SEED/ds64" "$SEED/opt"
     chmod 700 "$SEED/bluetooth"
     chmod 600 "$SEED"/nm/* 2>/dev/null || true
     sync
@@ -80,6 +82,42 @@ else
     sync
     trap - EXIT
     NEED_REBOOT=1   # persist.service must bind before services -> needs a clean boot
+fi
+
+# --- migrate: seed /opt/ds64 into an EXISTING image ----------------------------
+# Images created before the app code was relocated onto the persistent store
+# have no `opt` subdir; without one ds64-persist leaves /opt/ds64 on the read-only
+# root and `ds64-update` cannot write through. Seed it now from the live (writable)
+# code. Skip when /opt/ds64 is ALREADY a bind mount -- then it IS the image's copy
+# and re-seeding would copy onto itself. Seed THROUGH the live persist mount if one
+# is up (a second rw loop-mount of the same backing file would clash), else mount
+# the image once at $SEED.
+say "App code on the persistent store"
+if mountpoint -q /opt/ds64; then
+    ok "/opt/ds64 already served from the image"
+else
+    seed_mnt=""
+    if mountpoint -q "$PERSIST_MNT"; then
+        opt_dst="$PERSIST_MNT/opt"
+    else
+        mkdir -p "$SEED"
+        mount -o loop "$IMG" "$SEED"
+        seed_mnt="$SEED"
+        opt_dst="$SEED/opt"
+    fi
+    if [ -z "$(ls -A "$opt_dst" 2>/dev/null)" ]; then
+        chg "seeding /opt/ds64 into the image"
+        mkdir -p "$opt_dst"
+        cp -a /opt/ds64/. "$opt_dst/"
+        chown -R root:root "$opt_dst"
+        sync
+    else
+        ok "image already carries /opt/ds64"
+    fi
+    if [ -n "$seed_mnt" ]; then
+        umount "$seed_mnt"
+        rmdir "$seed_mnt" 2>/dev/null || true
+    fi
 fi
 
 # --- enable + PROVE the boot-time mount before we commit to read-only root ------

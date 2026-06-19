@@ -211,7 +211,8 @@ ok "installed + enabled: ${UNITS[*]}"
 say "Maintenance tooling -> /usr/local/sbin"
 install -m 755 "$DEST/setup/ds64-lock"   /usr/local/sbin/ds64-lock
 install -m 755 "$DEST/setup/ds64-unlock" /usr/local/sbin/ds64-unlock
-ok "installed ds64-lock, ds64-unlock"
+install -m 755 "$DEST/setup/ds64-update" /usr/local/sbin/ds64-update
+ok "installed ds64-lock, ds64-unlock, ds64-update"
 
 # --- 10. apply now (or defer to the reboot) ------------------------------------
 if [ "$REBOOT_NEEDED" -eq 0 ]; then
@@ -258,13 +259,16 @@ printf '    Pair a pad    open the Web UI, or run:\n'
 printf '                  bash %s/scripts/pair-ds4.sh\n\n' "$DEST"
 if [ "$HARDEN" -eq 1 ]; then
     printf '    Appliance     read-only mode is ON -- power-loss proof\n\n'
-    printf '    Update later  sudo ds64-unlock  (reboots), then re-run this\n'
+    printf '    Update code   sudo ds64-update   # git-pull + restart, no reboot\n'
+    printf '    Full update   for unit / config / package changes:\n'
+    printf '                  sudo ds64-unlock  (reboots), then re-run this\n'
     printf '                  installer -- it updates and re-hardens for you\n'
 else
     printf '    Harden        make it power-loss proof (recommended):\n'
     printf '                  sudo ds64-lock     # read-only + persistent store\n'
     printf '                  sudo ds64-unlock   # undo, e.g. to update the OS\n\n'
-    printf '    Update later  re-run this installer (git-pulls + restarts)\n'
+    printf '    Update code   sudo ds64-update   # git-pull + restart, no reboot\n'
+    printf '    Full update   re-run this installer (git-pulls + restarts)\n'
 fi
 
 if [ "$REBOOT_NEEDED" -eq 1 ]; then
