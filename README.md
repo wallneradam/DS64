@@ -66,12 +66,16 @@ its remote-control feature on), and the controller's lightbar shows the state �
 
 ## What you need
 
-- A **Commodore 64 Ultimate** (tested on factory firmware `c64u_v1.1.0`), **on
-  your network** (Ethernet or WiFi). In the U64's **network settings**, enable
+- A **Commodore 64 Ultimate** running **firmware `1.1.0` or newer** (tested on
+  `c64u_v1.1.0`), **on your network** (Ethernet or WiFi). `1.1.0` is the release
+  that added USB-mouse / 1351 emulation — the **touchpad-as-mouse** feature needs
+  it — and it's the tested baseline. In the U64's **network settings**, enable
   networking and turn on the **Web Remote Control Service** — that REST API is how
   the Pi finds the U64 (it scans the local network for it) and switches joystick
-  mode on and off. The original **Ultimate 64** boards should work too (they share
-  the firmware and USB host), but that's untested.
+  mode on and off. The original **Ultimate 64 / U64E2** boards should work too
+  (untested); they run the separate **3.x** firmware line, where the matching
+  USB-mouse support arrived in **`3.14d`**. Updating the firmware is quick and well
+  documented — several YouTube walkthroughs show the whole process.
 - A **Raspberry Pi** with a USB **gadget-capable** port, on the **same network** as
   the U64 (Ethernet or WiFi) — a **Pi 4 Model B** is the tested reference. On the Pi
   4 the **USB-C** port becomes the C64 link and can also power the Pi straight from
