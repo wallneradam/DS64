@@ -252,8 +252,8 @@ printf '\n  ┌%s┐\n'   "$bar"
 printf   '  │  %-56s│\n' "DS64 installed"
 printf   '  └%s┘\n\n' "$bar"
 
-printf '    Web UI        http://%s:8080/\n'   "${ip:-<pi-ip>}"
-printf '                  http://%s.local:8080/\n\n' "$host"
+printf '    Web UI        http://%s/\n'   "${ip:-<pi-ip>}"
+printf '                  http://%s.local/\n\n' "$host"
 printf '    Pair a pad    open the Web UI, or run:\n'
 printf '                  bash %s/scripts/pair-ds4.sh\n\n' "$DEST"
 if [ "$HARDEN" -eq 1 ]; then

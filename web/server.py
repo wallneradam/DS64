@@ -9,7 +9,7 @@ a client is connected -- with no open tab the appliance stays radio-quiet, which
 keeps the shared Wi-Fi/Bluetooth radio from wedging the BT firmware. Run as root
 (writes /etc/ds64, drives bluetoothctl).
 
-  sudo python3 web/server.py            # listens on http://<pi>:8080
+  sudo python3 web/server.py            # listens on http://<pi>/  (port 80)
 """
 import asyncio
 import glob
@@ -28,7 +28,7 @@ from aiohttp import web
 
 CONFIG = os.environ.get("DS64_CONFIG", "/etc/ds64/config.json")
 STATUS = os.environ.get("DS64_STATUS", "/run/ds64/status.json")
-LISTEN_PORT = int(os.environ.get("DS64_PORT", "8080"))
+LISTEN_PORT = int(os.environ.get("DS64_PORT", "80"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAIR_SCRIPT = os.path.join(os.path.dirname(HERE), "scripts", "pair-ds4.sh")
 

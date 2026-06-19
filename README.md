@@ -151,13 +151,13 @@ responds after that reboot**.
 Open the web panel in any browser on your network — phone, tablet or computer:
 
 ```
-http://<hostname>.local:8080/
+http://<hostname>.local/
 ```
 
 `<hostname>` is whatever you set in Raspberry Pi Imager (so if you set `ds64`, it's
-`http://ds64.local:8080/`). If `.local` doesn't load — it can fail on some Windows
+`http://ds64.local/`). If `.local` doesn't load — it can fail on some Windows
 and Android setups — use the Pi's **IP address** instead (the installer printed it;
-you can also find it in your router's device list): `http://<pi-ip>:8080/`.
+you can also find it in your router's device list): `http://<pi-ip>/`.
 
 Then:
 
