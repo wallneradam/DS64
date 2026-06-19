@@ -37,6 +37,16 @@ for mac in $(known_controllers); do
   bluetoothctl remove "$mac" >/dev/null 2>&1
 done
 
+# Disable LE so discovery does pure BR/EDR inquiry. DS4/DS5 controllers connect over
+# classic BR/EDR; BlueZ's default discovery interleaves BR/EDR inquiry with LE scanning
+# (mgmt Start Discovery address type 0x07). Near many BLE devices the LE half starves the
+# inquiry windows and the controller never appears in scan results -- only LE devices do.
+# The bluetoothctl `transport bredr` filter does NOT restrict the underlying scan (it stays
+# type 0x07; verified via btmon), so it does not fix this. Turning LE off forces the kernel
+# to do BR/EDR-only inquiry, and the controller is found reliably. DS64 uses no BLE, so this
+# is harmless. btmgmt is wrapped in a pty because it hangs when stdin is /dev/null (systemd).
+script -qec "btmgmt le off" /dev/null </dev/null >/dev/null 2>&1
+
 # Capture HCI/mgmt traffic so the fallback can grab the link key if needed.
 BTMON_LOG=$(mktemp /tmp/ds64-btmon.XXXXXX)
 btmon >"$BTMON_LOG" 2>&1 &
