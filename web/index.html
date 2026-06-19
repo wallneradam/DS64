@@ -63,6 +63,9 @@
   .badge.on { background:var(--ok); color:#062b06; }
   .badge.off { background:transparent; color:var(--off); border-color:var(--off); }
   .muted { color:var(--fg); font-size:.82rem; }
+  .foot { text-align:center; color:var(--fg); font-size:.78rem; margin:28px 0 0; line-height:1.7; }
+  .foot a { color:var(--hi); text-decoration:none; }
+  .foot a:hover { text-decoration:underline; }
   pre { white-space:pre-wrap; color:var(--fg); font-size:.78rem; margin:10px 0 0; }
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
          background:var(--off); margin-right:7px; vertical-align:middle; }
@@ -224,6 +227,11 @@
     </div>
     <div class="muted" style="margin-top:8px">The DS4/DS5 touchpad drives the GEOS cursor as a 1351 on port 1, so turning it on moves the joystick to Port 2. Lower = slower; the pad is short vertically, so Y is usually a touch faster than X.</div>
   </div>
+
+  <footer class="foot">
+    <a href="https://github.com/wallneradam/DS64" target="_blank" rel="noopener">github.com/wallneradam/DS64</a><br>
+    &copy; 2026 Adam Wallner &middot; GPL v3
+  </footer>
 </div>
 
 <div class="modal" id="logmodal">

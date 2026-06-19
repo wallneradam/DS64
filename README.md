@@ -22,8 +22,8 @@ drives **GEOS** and your games without unplugging anything (see
 [Mouse (touchpad)](#mouse-touchpad)).
 
 <p align="center">
-  <img src="docs/web-ui-1.png" alt="DS64 web panel (top): C64 connection, status, controller pairing and joystick port" width="290">
-  <img src="docs/web-ui-2.png" alt="DS64 web panel (bottom): auto/manual mode, extra buttons and the 1351 mouse (touchpad) settings" width="290">
+  <img src="docs/web-ui-1.png" alt="DS64 web panel (top): C64 connection, status and controller pairing" width="290">
+  <img src="docs/web-ui-2.png" alt="DS64 web panel (bottom): joystick port, auto/manual mode, extra buttons and the 1351 mouse (touchpad) settings" width="290">
 </p>
 
 Everything is driven from a small **web panel** — detect the C64, pair the
@@ -139,9 +139,10 @@ described below). When it finishes the installer offers to reboot for you — ju
 press **ENTER** (or Ctrl-C to do it later with `sudo reboot`). The **web panel only
 responds after that reboot**.
 
-- **Update later:** the system is read-only by default, so first run `sudo
-  ds64-unlock` (it reboots), then re-run the install command — it pulls the latest
-  version *and* re-hardens for you.
+- **Update later:** run `sudo ds64-update` — it fetches the latest version and
+  restarts in seconds, **no reboot**, even in read-only appliance mode. (For the
+  rare update that also changes the system setup, it tells you to run the full
+  update instead; see [Appliance mode](#appliance-mode-read-only-power-loss-proof).)
 - **Skip the read-only mode:** prefix the install command with `DS64_NO_HARDEN=1` to
   leave the card writable. Not recommended — a power cut can then corrupt it (see
   [Appliance mode](#appliance-mode-read-only-power-loss-proof)).
@@ -259,21 +260,30 @@ controller bond, your WiFi profiles and the DS64 config. Just power the Pi off w
 the C64; there's nothing to shut down. This is also why the WiFi/bond/config you set
 **after** the install (pairing a pad, picking the C64) still survive a power cut.
 
-To **update** the software or use the Pi for other things, unlock it first:
+**Updating** the DS64 software is a one-liner, even though the system is read-only:
+
+```
+sudo ds64-update    # fetch the latest version and restart — no reboot
+```
+
+It works straight away in appliance mode and takes only a few seconds. If an update
+*also* changes the system setup — the OS, the background services or the boot
+configuration (rare) — `ds64-update` says so and you run the **full update**
+instead: unlock, then re-install (which pulls everything and re-hardens for you):
 
 ```
 sudo ds64-unlock    # make the system writable again, then reboots
 ```
 
-After it reboots, re-run the install command (it pulls the latest version and
-re-hardens for you). To re-harden by hand at any time:
+After it reboots, re-run the install command. You can also re-harden by hand at any
+time:
 
 ```
 sudo ds64-lock      # back to the read-only appliance (one reboot)
 ```
 
-Both commands are reversible and safe to re-run. To install **without** hardening in
-the first place, prefix the install command with `DS64_NO_HARDEN=1`.
+All three commands are reversible and safe to re-run. To install **without**
+hardening in the first place, prefix the install command with `DS64_NO_HARDEN=1`.
 
 ## Troubleshooting
 
