@@ -67,10 +67,11 @@ its remote-control feature on), and the controller's lightbar shows the state �
 ## What you need
 
 - A **Commodore 64 Ultimate** (tested on factory firmware `c64u_v1.1.0`), **on
-  your network** (Ethernet or WiFi), with its **network/remote-control feature
-  enabled** in the U64's own settings — that network connection is what the Pi uses
-  to switch joystick mode on and off. The original **Ultimate 64** boards should
-  work too (they share the firmware and USB host), but that's untested.
+  your network** (Ethernet or WiFi). In the U64's **network settings**, enable
+  networking and turn on the **Web Remote Control Service** — that REST API is how
+  the Pi finds the U64 (it scans the local network for it) and switches joystick
+  mode on and off. The original **Ultimate 64** boards should work too (they share
+  the firmware and USB host), but that's untested.
 - A **Raspberry Pi** with a USB **gadget-capable** port, on the **same network** as
   the U64 (Ethernet or WiFi) — a **Pi 4 Model B** is the tested reference. On the Pi
   4 the **USB-C** port becomes the C64 link and can also power the Pi straight from
@@ -167,7 +168,8 @@ Then:
    U64's own network/settings screen) and press **SAVE**. DETECT only scans the Pi's
    own network, so if the U64 is on a different subnet you'll need to enter its IP by
    hand. When it's reachable the dot turns green and shows the U64's name. If it
-   stays red, check the U64 is on the network and its network feature is enabled.
+   stays red, check the U64 is on the network and its **Web Remote Control Service**
+   is enabled.
 2. **Pair the controller.** Press **PAIR CONTROLLER**, then put the pad in pairing
    mode — hold **SHARE + PS** until the lightbar double-flashes. It pairs, trusts
    and connects in one go, and the bond is made durable so it **reconnects with a
