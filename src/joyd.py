@@ -32,7 +32,9 @@ import errno
 import glob
 import json
 import os
+import queue
 import sys
+import threading
 import time
 import selectors
 import urllib.parse
@@ -52,6 +54,7 @@ DEAD = 64   # analog stick distance from center (128) to count as a direction
 TRIG = 64   # L2/R2 analog trigger threshold (rest 0 .. full 255)
 TICK = 0.15      # seconds between idle/config checks
 HEARTBEAT = 2.0  # refresh status.json at least this often, so the web UI sees us alive
+MENU_DEBOUNCE = 0.4  # ignore PS->menu presses this close together (no double-toggle)
 
 FIRE_BTNS = {E.BTN_SOUTH, E.BTN_TL, E.BTN_TR, E.BTN_TL2, E.BTN_TR2}  # X, L1, R1, L2, R2
 
@@ -240,6 +243,13 @@ class Bridge:
         self.last_buttons = 0
         self.accum_x = 0.0           # fractional carry, so slow drags are not lost
         self.accum_y = 0.0
+        # REST calls to the U64 (swapper + menu) run on a background worker so a
+        # slow/timing-out HTTP request can never stall the event loop -- a stalled
+        # loop buffers controller input and replays it in a burst on recovery.
+        # Bounded queue: under a sustained outage drop new calls rather than pile up.
+        self._rest_q = queue.Queue(maxsize=8)
+        self._last_menu_ts = 0.0
+        threading.Thread(target=self._rest_worker, daemon=True).start()
         # Always bind the touchpad if one is present; whether its motion is sent is
         # gated live by the touchpad_mouse config (see poll_touchpad), so the mouse
         # switches on and off from the web panel without restarting joyd.
@@ -456,14 +466,32 @@ class Bridge:
         except OSError as ex:
             print("lightbar write error:", ex, file=sys.stderr)
 
-    def rest_put(self, value):
-        url = "http://%s%s?value=%s" % (
-            self.cfg["u64_host"], SWAPPER_PATH, urllib.parse.quote(value))
+    def _rest_call(self, label, url):
+        """Blocking PUT -- only call OFF the event loop (worker thread / shutdown)."""
         try:
             req = urllib.request.Request(url, method="PUT")
             urllib.request.urlopen(req, timeout=3).read()
         except Exception as ex:
-            print("REST put '%s' failed: %s" % (value, ex), file=sys.stderr)
+            print("REST %s failed: %s" % (label, ex), file=sys.stderr)
+
+    def _rest_worker(self):
+        while True:
+            label, url = self._rest_q.get()
+            self._rest_call(label, url)
+            self._rest_q.task_done()
+
+    def _rest_enqueue(self, label, url):
+        try:
+            self._rest_q.put_nowait((label, url))
+        except queue.Full:
+            print("REST queue full, dropping", label, file=sys.stderr)
+
+    def _swapper_url(self, value):
+        return "http://%s%s?value=%s" % (
+            self.cfg["u64_host"], SWAPPER_PATH, urllib.parse.quote(value))
+
+    def rest_put(self, value):
+        self._rest_enqueue("put '%s'" % value, self._swapper_url(value))
 
     def set_wasd(self, on):
         if on == self.wasd_on:
@@ -490,13 +518,12 @@ class Bridge:
         physical menu button -- the firmware's real open/close toggle. A USB
         F10 only opens it, and the physical button is a hardware signal no USB
         scancode can reach. See firmware api/route_machine.cc."""
-        url = "http://%s/v1/machine:menu_button" % self.cfg["u64_host"]
-        try:
-            req = urllib.request.Request(url, method="PUT")
-            urllib.request.urlopen(req, timeout=3).read()
-        except Exception as ex:
-            print("menu_button PUT failed: %s" % ex, file=sys.stderr)
+        now = time.monotonic()
+        if now - self._last_menu_ts < MENU_DEBOUNCE:
             return
+        self._last_menu_ts = now
+        url = "http://%s/v1/machine:menu_button" % self.cfg["u64_host"]
+        self._rest_enqueue("menu_button", url)
         print("PS -> menu (toggle)", file=sys.stderr)
 
     # --- status for the web UI ---
@@ -551,7 +578,7 @@ class Bridge:
                 self.send_release()
             except OSError:
                 pass
-            self.rest_put("Normal")
+            self._rest_call("put 'Normal'", self._swapper_url("Normal"))
             self.wasd_on = False
             for fd in (self.kbd_fd, self.mouse_fd):
                 if fd is not None:

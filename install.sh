@@ -18,6 +18,7 @@ MODULES_CONF=/etc/modules-load.d/c64u-joy.conf
 INPUT_CONF=/etc/bluetooth/input.conf
 NM_PSAVE_CONF=/etc/NetworkManager/conf.d/00-ds64-wifi-powersave-off.conf
 CONFIG_DIR=/etc/ds64
+ARM_FREQ_CAP="${DS64_ARM_FREQ:-900}"   # MHz cap; tune via DS64_ARM_FREQ (600 = safest)
 UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web)
 
 REBOOT_NEEDED=0
@@ -87,7 +88,7 @@ git -C "$DEST" clean -qfd
 after=$(git -C "$DEST" rev-parse -q --verify HEAD 2>/dev/null || echo none)
 if [ "$before" = "$after" ]; then ok "already at ${after:0:7}"; else chg "now at ${after:0:7}"; fi
 
-# --- 3. USB gadget (peripheral) mode in config.txt -----------------------------
+# --- 3. config.txt: USB gadget + CPU power cap ---------------------------------
 say "USB gadget (dwc2 peripheral) in $CONFIG_TXT"
 if grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral' "$CONFIG_TXT"; then
     ok "dtoverlay=dwc2,dr_mode=peripheral present"
@@ -99,6 +100,32 @@ fi
 if grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=host' "$CONFIG_TXT"; then
     warn "a conflicting 'dtoverlay=dwc2,dr_mode=host' line exists in $CONFIG_TXT --"
     warn "remove it or the USB-C port may stay in host mode and the gadget won't bind."
+fi
+
+# Cap the CPU to cut peak current draw. The Pi runs off the C64's USB power
+# (non-spec supply); the 1.8 GHz turbo current spike destabilises the shared
+# WiFi/BT radio -> controller drops + `hci0: command tx timeout` firmware wedge.
+# A controller bridge needs no speed. (Verified: 600 MHz killed the wedge; the
+# default cap is a balanced 1000 MHz -- set DS64_ARM_FREQ to tune.)
+say "CPU power cap in $CONFIG_TXT (arm_boost=0, arm_freq=$ARM_FREQ_CAP)"
+cpu_changed=0
+if grep -qE '^[[:space:]]*arm_boost=0[[:space:]]*$' "$CONFIG_TXT"; then :
+elif grep -qE '^[[:space:]]*arm_boost=' "$CONFIG_TXT"; then
+    sed -i -E 's/^[[:space:]]*arm_boost=.*/arm_boost=0/' "$CONFIG_TXT"; cpu_changed=1
+else
+    printf '\n[all]\narm_boost=0\n' >> "$CONFIG_TXT"; cpu_changed=1
+fi
+if grep -qE "^[[:space:]]*arm_freq=${ARM_FREQ_CAP}[[:space:]]*\$" "$CONFIG_TXT"; then :
+elif grep -qE '^[[:space:]]*arm_freq=' "$CONFIG_TXT"; then
+    sed -i -E "s/^[[:space:]]*arm_freq=.*/arm_freq=${ARM_FREQ_CAP}/" "$CONFIG_TXT"; cpu_changed=1
+else
+    printf '\n[all]\narm_freq=%s\n' "$ARM_FREQ_CAP" >> "$CONFIG_TXT"; cpu_changed=1
+fi
+if [ "$cpu_changed" -eq 1 ]; then
+    chg "capped CPU (arm_boost=0, arm_freq=$ARM_FREQ_CAP) -- reboot needed"
+    REBOOT_NEEDED=1
+else
+    ok "CPU cap (arm_boost=0, arm_freq=$ARM_FREQ_CAP) present"
 fi
 
 # --- 4. controller kernel modules at boot --------------------------------------
