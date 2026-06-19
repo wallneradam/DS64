@@ -198,6 +198,8 @@ The panel's **MODE** switch decides how the joystick turns on and off:
 
 - **PS button** opens the **U64 menu** (sends F10 on release).
 - **Circle** acts as **Left** — the "back" direction inside the U64 menu.
+- **Square** acts as the **F1 key** — held alongside the joystick, so it works
+  whether the joystick is on or off.
 
 ## Mouse (touchpad)
 
@@ -270,6 +272,21 @@ sudo ds64-lock      # back to the read-only appliance (one reboot)
 Both commands are reversible and safe to re-run. To install **without** hardening in
 the first place, prefix the install command with `DS64_NO_HARDEN=1`.
 
+## Troubleshooting
+
+- **The very first boot takes much longer — that's normal.** On the first start
+  the Pi expands the image to fill the SD card, which adds a one-time delay. Let it
+  finish; it only happens once.
+- **Every cold start takes a bit — about 1 to 1.5 minutes.** Powering on from cold,
+  the Pi needs a minute or so to come up before it's ready. Give it that time before
+  worrying.
+- **Controller paired but nothing reaches the C64?** Unplug the Pi's USB from the
+  C64 and plug it back in. This usually means the C64 didn't recognise the Pi as a
+  keyboard on power-up; re-plugging makes the C64 enumerate it again.
+- **Still no input after re-plugging?** Suspect the **USB cable**. A charge-only
+  cable carries no data — use a proper **data cable**. A damaged or overly long
+  cable can fail the same way; try a shorter, known-good one.
+
 ## Limitations
 
 - **One joystick** (you choose Port 1 or 2 in the panel). Two of *these* at once
@@ -281,6 +298,25 @@ the first place, prefix the install command with `DS64_NO_HARDEN=1`.
 - While the joystick is **active**, W/A/S/D and RETURN are the joystick and can't
   be typed. AUTO mode frees them automatically as soon as you stop playing, so in
   practice this only matters mid-game.
+
+## Support
+
+If DS64 saved you a joystick (or a soldering iron), the easiest way to help is a
+**⭐ on the repo** — it's how other people find it.
+
+If you'd like to go further, you can buy me a coffee:
+
+➡️ **[Buy me a coffee (PayPal)](https://www.paypal.com/donate/?hosted_button_id=7V8FHJYFZGKE6)**
+
+## More from me
+
+DS64 started as a side-quest while building C64 stuff — I write games and tools
+for the machine, mostly in my own Python-like language. If you want to try one,
+here's **SlotShot**: a puzzle game that's deeper (and a lot meaner) than it
+looks. Easy to pick up, hard to put down, and the difficulty does not mess
+around.
+
+➡️ [SlotShot on itch.io](https://wlladam.itch.io/slotshot)
 
 ## License
 
