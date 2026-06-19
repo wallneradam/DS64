@@ -59,7 +59,7 @@ fi
 # --- 1. packages ---------------------------------------------------------------
 say "Packages"
 miss=()
-for p in git python3-evdev; do
+for p in git python3-evdev python3-aiohttp; do
     dpkg -s "$p" >/dev/null 2>&1 || miss+=("$p")
 done
 if [ "${#miss[@]}" -gt 0 ]; then
@@ -67,7 +67,7 @@ if [ "${#miss[@]}" -gt 0 ]; then
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${miss[@]}"
 else
-    ok "git, python3-evdev already present"
+    ok "git, python3-evdev, python3-aiohttp already present"
 fi
 
 # --- 2. source: clone or update /opt/ds64 to origin/$BRANCH --------------------
