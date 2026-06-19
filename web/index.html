@@ -252,22 +252,18 @@ async function save(patch) {
   if (j.config) paintConfig(j.config);
 }
 
-async function poll() {
-  try {
-    const r = await fetch('/api/status');
-    const j = await r.json();
-    if (j.config && !document.activeElement.closest('input,button')) paintConfig(j.config);
-    const s = j.status;
-    const live = s && (Date.now()/1000 - s.ts) < 5;
-    $('#dot').classList.toggle('live', !!live);
-    $('#ctrl').textContent = (s && live) ? (s.controller || 'waiting for controller...') : 'daemon not running';
-    const on = !!(s && live && s.wasd_on);
-    const badge = $('#wasd');
-    badge.textContent = on ? 'WASD ON' : 'WASD OFF';
-    badge.className = 'badge ' + (on ? 'on' : 'off');
-    $('#modeline').textContent = (s && live)
-      ? ('mode: ' + s.mode + '   ·   port ' + s.port) : '';
-  } catch (e) { /* keep polling */ }
+function renderStatus(j) {
+  if (j.config && !document.activeElement.closest('input,button')) paintConfig(j.config);
+  const s = j.status;
+  const live = ('live' in j) ? !!j.live : !!(s && (Date.now()/1000 - s.ts) < 5);
+  $('#dot').classList.toggle('live', live);
+  $('#ctrl').textContent = (s && live) ? (s.controller || 'waiting for controller...') : 'daemon not running';
+  const on = !!(s && live && s.wasd_on);
+  const badge = $('#wasd');
+  badge.textContent = on ? 'WASD ON' : 'WASD OFF';
+  badge.className = 'badge ' + (on ? 'on' : 'off');
+  $('#modeline').textContent = (s && live)
+    ? ('mode: ' + s.mode + '   ·   port ' + s.port) : '';
 }
 
 document.querySelectorAll('#port button').forEach(b =>
@@ -313,21 +309,23 @@ bindSensitivity('#msy', '#msyval', 'mouse_sensitivity_y');
 let lastLog = '';
 function setResult(html, cls) { const el = $('#pairresult'); el.innerHTML = html; el.className = cls || 'muted'; }
 
+function renderController(c) {
+  const has = !!c;
+  const conn = has && c.connected;
+  $('#bondedrow').style.display = has ? 'flex' : 'none';
+  $('#bondedname').textContent = has ? c.name : '';
+  $('#pairbtn').style.display = has ? 'none' : 'block';
+  $('#pairedbtns').style.display = has ? 'flex' : 'none';
+  $('#disconnectbtn').style.display = conn ? '' : 'none';   // only when actually connected
+  $('#pairhint').textContent = has
+    ? (conn ? 'Connected. DISCONNECT drops the link; FORGET removes the pairing.'
+            : 'Press PS on the controller to connect it. FORGET removes the pairing.')
+    : 'Hold SHARE + PS until the lightbar double-flashes, then press.';
+}
+
 async function refreshController() {
-  try {
-    const c = (await (await fetch('/api/controller')).json()).controller;
-    const has = !!c;
-    const conn = has && c.connected;
-    $('#bondedrow').style.display = has ? 'flex' : 'none';
-    $('#bondedname').textContent = has ? c.name : '';
-    $('#pairbtn').style.display = has ? 'none' : 'block';
-    $('#pairedbtns').style.display = has ? 'flex' : 'none';
-    $('#disconnectbtn').style.display = conn ? '' : 'none';   // only when actually connected
-    $('#pairhint').textContent = has
-      ? (conn ? 'Connected. DISCONNECT drops the link; FORGET removes the pairing.'
-              : 'Press PS on the controller to connect it. FORGET removes the pairing.')
-      : 'Hold SHARE + PS until the lightbar double-flashes, then press.';
-  } catch (e) { /* leave as is */ }
+  try { renderController((await (await fetch('/api/controller')).json()).controller); }
+  catch (e) { /* leave as is */ }
 }
 
 $('#pairbtn').onclick = async () => {
@@ -382,17 +380,19 @@ $('#logbtn').onclick = () => { $('#logtext').textContent = lastLog; $('#logmodal
 $('#logclose').onclick = () => $('#logmodal').classList.remove('show');
 $('#logmodal').onclick = e => { if (e.target.id === 'logmodal') $('#logmodal').classList.remove('show'); };
 
+function renderU64(j) {
+  if (document.activeElement !== $('#u64host')) $('#u64host').value = j.host || '';
+  $('#u64dot').classList.toggle('live', !!j.reachable);
+  $('#u64state').innerHTML = j.reachable
+    ? '<span class="ok">connected</span> &middot; ' + (j.product || 'Ultimate')
+      + (j.hostname ? ' &middot; ' + j.hostname : '')
+    : '<span class="warn">not reachable</span>';
+  return !!j.reachable;
+}
+
 async function refreshU64() {
-  try {
-    const j = await (await fetch('/api/u64')).json();
-    if (document.activeElement !== $('#u64host')) $('#u64host').value = j.host || '';
-    $('#u64dot').classList.toggle('live', !!j.reachable);
-    $('#u64state').innerHTML = j.reachable
-      ? '<span class="ok">connected</span> &middot; ' + (j.product || 'Ultimate')
-        + (j.hostname ? ' &middot; ' + j.hostname : '')
-      : '<span class="warn">not reachable</span>';
-    return !!j.reachable;
-  } catch (e) { return false; }
+  try { return renderU64(await (await fetch('/api/u64')).json()); }
+  catch (e) { return false; }
 }
 
 async function detectU64() {
@@ -425,10 +425,28 @@ $('#u64detect').onclick = detectU64;
 $('#u64save').onclick = saveHost;
 $('#u64host').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); saveHost(); } };
 
+let es = null;
+let u64FallbackDone = false;
+function connectSSE() {
+  if (es) es.close();
+  es = new EventSource('/api/events');
+  es.addEventListener('status',     e => renderStatus(JSON.parse(e.data)));
+  es.addEventListener('controller', e => renderController(JSON.parse(e.data).controller));
+  es.addEventListener('u64', e => {
+    const ok = renderU64(JSON.parse(e.data));
+    if (!ok && !u64FallbackDone) { u64FallbackDone = true; detectU64(); }
+  });
+}
+// A hidden/closed tab drops to zero clients so the server stops probing and the
+// shared Wi-Fi/Bluetooth radio goes quiet; EventSource auto-reconnects on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (es) { es.close(); es = null; } }
+  else if (!es) connectSSE();
+});
+window.addEventListener('pagehide', () => { if (es) { es.close(); es = null; } });
+
 fetch('/api/config').then(r => r.json()).then(paintConfig);
-refreshController(); setInterval(refreshController, 4000);
-refreshU64().then(ok => { if (!ok) detectU64(); }); setInterval(refreshU64, 5000);
-poll(); setInterval(poll, 1500);
+connectSSE();
 </script>
 </body>
 </html>

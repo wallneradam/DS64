@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""DS64 web control panel (Python standard library only).
+"""DS64 web control panel (aiohttp; apt: python3-aiohttp).
 
 Serves a small page to pair a controller and tune the bridge. It reads/writes
 the shared config file (the joyd.py daemon live-reloads it) and reports the
-daemon's status. Run as root (writes /etc/ds64, drives bluetoothctl).
+daemon's status. The browser opens one Server-Sent Events stream (/api/events)
+instead of polling, and the server probes the controller and the U64 only while
+a client is connected -- with no open tab the appliance stays radio-quiet, which
+keeps the shared Wi-Fi/Bluetooth radio from wedging the BT firmware. Run as root
+(writes /etc/ds64, drives bluetoothctl).
 
   sudo python3 web/server.py            # listens on http://<pi>:8080
 """
+import asyncio
 import glob
 import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from aiohttp import web
 
 CONFIG = os.environ.get("DS64_CONFIG", "/etc/ds64/config.json")
 STATUS = os.environ.get("DS64_STATUS", "/run/ds64/status.json")
@@ -244,113 +252,330 @@ def pair_controller():
     return {"ok": ok, "controller": ctrl, "log": log.strip()}
 
 
-class Handler(BaseHTTPRequestHandler):
-    def _json(self, obj, code=200):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+# ---------------------------------------------------------------------------
+# SSE event stream + shared state watcher
+#
+# The browser opens ONE long-lived /api/events stream instead of polling. A
+# single watcher coroutine runs only while >=1 client is connected; it reads the
+# daemon status file locally and probes the controller (bluetoothctl) and the
+# U64 (Wi-Fi) on a shared timer, pushing to clients only when something changes.
+# With no client connected nothing is probed, so the shared radio stays quiet.
+# ---------------------------------------------------------------------------
 
-    def _file(self, path, ctype):
+STATUS_POLL = 0.25        # how often the watcher re-reads the local status file (s)
+U64_INTERVAL = 12.0       # how often the U64 is probed over Wi-Fi, shared by all clients (s)
+HEARTBEAT_SECS = 5.0      # idle SSE keepalive; also bounds how fast a gone client is noticed (s)
+
+_UNSET = object()
+
+CLIENTS = set()           # set[asyncio.Queue]: one queue per connected SSE client
+LAST = {}                 # channel -> (signature, payload): last broadcast, for diff + replay
+WATCHER = None            # asyncio.Task | None
+NOTIFY = None             # asyncio.Event: set by commands to force an immediate re-check
+EXECUTOR = None           # ThreadPoolExecutor for blocking helpers (bluetoothctl, urllib)
+_evid = 0
+
+
+async def off(fn, *args):
+    """Run a blocking helper off the event loop so it never stalls the server."""
+    return await asyncio.get_running_loop().run_in_executor(EXECUTOR, fn, *args)
+
+
+def _status_payload_and_sig():
+    """The /api/status body plus a change-signature that ignores the heartbeat
+    timestamp, so an idle daemon rewriting status.json does not spam clients. The
+    server computes `live` here (own clock vs the daemon's ts) instead of leaving
+    it to the browser, so an idle-but-alive daemon needs no periodic push."""
+    cfg = read_config()
+    st = read_status()
+    live = bool(st and (time.time() - st.get("ts", 0)) < 5)
+    payload = {"config": cfg, "status": st, "live": live}
+    sig = {"config": cfg, "live": live,
+           "status": {k: v for k, v in st.items() if k != "ts"} if st else None}
+    return payload, sig
+
+
+def sse_frame(channel, obj):
+    global _evid
+    _evid += 1
+    return ("id: %d\nevent: %s\ndata: %s\n\n"
+            % (_evid, channel, json.dumps(obj))).encode()
+
+
+def broadcast_if_changed(channel, payload, signature=None):
+    """Queue `payload` to every client iff its signature changed since last time."""
+    sig = payload if signature is None else signature
+    prev = LAST.get(channel)
+    if prev is not None and prev[0] == sig:
+        return
+    LAST[channel] = (sig, payload)
+    frame = (channel, payload)
+    for q in list(CLIENTS):
         try:
-            with open(path, "rb") as f:
-                body = f.read()
-        except OSError:
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            self._file(os.path.join(HERE, "index.html"), "text/html; charset=utf-8")
-        elif self.path == "/api/config":
-            self._json(read_config())
-        elif self.path == "/api/status":
-            self._json({"config": read_config(), "status": read_status()})
-        elif self.path == "/api/controller":
+            q.put_nowait(frame)
+        except asyncio.QueueFull:
             try:
-                self._json({"controller": bonded_controller()})
-            except subprocess.TimeoutExpired:
-                self._json({"controller": None, "message": "bluetoothctl timed out"})
-        elif self.path == "/api/u64":
-            self._json(u64_status())
-        else:
-            self.send_error(404)
+                q.get_nowait()          # drop oldest, then keep the newest
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                q.put_nowait(frame)
+            except asyncio.QueueFull:
+                pass
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
+
+async def watcher_loop():
+    """One shared poller, alive only while CLIENTS is non-empty. Status is a cheap
+    local read every STATUS_POLL; bluetoothctl runs only when the connected
+    controller changes (or a command forces it); the U64 is probed on its own slow
+    Wi-Fi timer. Everything is pushed through broadcast_if_changed, so steady state
+    sends nothing."""
+    print("watcher: started -- probing while a client is connected", file=sys.stderr)
+    loop = asyncio.get_running_loop()
+    last_u64 = 0.0
+    last_ctrl_key = _UNSET
+    try:
+        while CLIENTS:
+            woken = NOTIFY.is_set()
+            NOTIFY.clear()
+
+            payload, sig = _status_payload_and_sig()
+            broadcast_if_changed("status", payload, sig)
+
+            ctrl_key = (payload["status"] or {}).get("controller")
+            if woken or ctrl_key != last_ctrl_key:
+                last_ctrl_key = ctrl_key
+                try:
+                    ctrl = await off(bonded_controller)
+                except subprocess.TimeoutExpired:
+                    ctrl = None
+                broadcast_if_changed("controller", {"controller": ctrl})
+
+            if loop.time() - last_u64 >= U64_INTERVAL:
+                last_u64 = loop.time()
+                broadcast_if_changed("u64", await off(u64_status))
+
+            try:
+                await asyncio.wait_for(NOTIFY.wait(), timeout=STATUS_POLL)
+            except asyncio.TimeoutError:
+                pass
+    except asyncio.CancelledError:
+        pass
+    finally:
+        LAST.clear()
+        print("watcher: stopped -- no clients, radio quiet", file=sys.stderr)
+
+
+def ensure_watcher():
+    """Start the shared poller unless it is already running. The loop exits on its
+    own once CLIENTS empties (it re-checks `while CLIENTS`), so a client reconnecting
+    before the old loop has exited simply keeps it alive -- never two probers at once,
+    which is the whole point of not cancelling it from the outside mid-probe."""
+    global WATCHER
+    if WATCHER is None or WATCHER.done():
+        WATCHER = asyncio.ensure_future(watcher_loop())
+
+
+async def sse_handler(request):
+    resp = web.StreamResponse(status=200, headers={
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    })
+    await resp.prepare(request)
+    # If a client vanishes WITHOUT a clean close (laptop sleeps, Wi-Fi drops) there is
+    # no FIN, so writes succeed into the void and the watcher would keep probing the
+    # U64 for minutes (until TCP gives up). TCP_USER_TIMEOUT fails the socket ~30s after
+    # our keepalive writes go unacknowledged, so the watcher goes quiet promptly.
+    sock = request.transport.get_extra_info("socket") if request.transport else None
+    if sock is not None:
         try:
-            data = json.loads(raw or b"{}")
-        except ValueError:
-            self._json({"ok": False, "message": "bad JSON"}, 400)
-            return
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 30000)
+        except (OSError, AttributeError):
+            pass
+    q = asyncio.Queue(maxsize=32)
+    CLIENTS.add(q)
+    ensure_watcher()
+    try:
+        for channel in ("status", "controller", "u64"):
+            entry = LAST.get(channel)
+            if entry is not None:
+                await resp.write(sse_frame(channel, entry[1]))
+        # A small keepalive write to a gone client does not reliably raise (aiohttp
+        # buffers it), so poll the transport for the close as well; whichever fires
+        # first ends the stream and lets the watcher go quiet.
+        while not (request.transport is None or request.transport.is_closing()):
+            try:
+                channel, obj = await asyncio.wait_for(q.get(), timeout=HEARTBEAT_SECS)
+                await resp.write(sse_frame(channel, obj))
+            except asyncio.TimeoutError:
+                await resp.write(b": keepalive\n\n")
+    except (asyncio.CancelledError, ConnectionResetError, RuntimeError):
+        pass
+    finally:
+        CLIENTS.discard(q)          # the watcher sees the empty set next tick and exits itself
+    return resp
 
-        if self.path == "/api/config":
-            cfg = read_config()
-            if "port" in data and int(data["port"]) in (1, 2):
-                cfg["port"] = int(data["port"])
-            if data.get("mode") in ("auto", "manual"):
-                cfg["mode"] = data["mode"]
-            if "idle_timeout" in data:
-                cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
-            if "u64_host" in data and str(data["u64_host"]).strip():
-                cfg["u64_host"] = str(data["u64_host"]).strip()
-            for flag in ("ps_menu", "circle_left", "square_f1", "touchpad_mouse",
-                         "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y"):
-                if flag in data:
-                    cfg[flag] = bool(data[flag])
-            for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y"):
-                if axis in data:
-                    cfg[axis] = max(0.02, min(3.0, float(data[axis])))
-            # The U64 hardwires a USB mouse to control port 1, so the 1351 mouse and
-            # a port-1 joystick can't share it. Keep them mutually exclusive,
-            # favouring whichever the user just changed: enabling the mouse frees
-            # port 1 by moving the joystick to port 2; choosing port 1 for the
-            # joystick turns the mouse off.
-            if cfg.get("touchpad_mouse") and int(cfg.get("port", 2)) == 1:
-                if "touchpad_mouse" in data and bool(data["touchpad_mouse"]):
-                    cfg["port"] = 2
-                else:
-                    cfg["touchpad_mouse"] = False
-            write_config(cfg)
-            self._json({"ok": True, "config": cfg})
-        elif self.path == "/api/pair":
-            try:
-                self._json(pair_controller())
-            except subprocess.TimeoutExpired:
-                self._json({"ok": False, "message": "pairing timed out"}, 504)
-        elif self.path == "/api/forget":
-            try:
-                self._json(forget_controllers())
-            except subprocess.TimeoutExpired:
-                self._json({"ok": False, "message": "forget timed out"}, 504)
-        elif self.path == "/api/disconnect":
-            try:
-                self._json(disconnect_controllers())
-            except subprocess.TimeoutExpired:
-                self._json({"ok": False, "message": "disconnect timed out"}, 504)
-        elif self.path == "/api/detect_u64":
-            self._json(detect_u64())
+
+# ---------------------------------------------------------------------------
+# HTTP API (GET reads kept for fallback/debugging; the browser uses /api/events)
+# ---------------------------------------------------------------------------
+
+async def serve_index(request):
+    return web.FileResponse(os.path.join(HERE, "index.html"),
+                            headers={"Content-Type": "text/html; charset=utf-8"})
+
+
+async def get_config(request):
+    return web.json_response(read_config())
+
+
+async def get_status(request):
+    payload, _ = _status_payload_and_sig()
+    return web.json_response(payload)
+
+
+async def get_controller(request):
+    try:
+        return web.json_response({"controller": await off(bonded_controller)})
+    except subprocess.TimeoutExpired:
+        return web.json_response({"controller": None, "message": "bluetoothctl timed out"})
+
+
+async def get_u64(request):
+    return web.json_response(await off(u64_status))
+
+
+async def _json_body(request):
+    raw = await request.read()
+    return json.loads(raw or b"{}")
+
+
+async def post_config(request):
+    try:
+        data = await _json_body(request)
+    except ValueError:
+        return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
+    cfg = read_config()
+    if "port" in data and int(data["port"]) in (1, 2):
+        cfg["port"] = int(data["port"])
+    if data.get("mode") in ("auto", "manual"):
+        cfg["mode"] = data["mode"]
+    if "idle_timeout" in data:
+        cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
+    if "u64_host" in data and str(data["u64_host"]).strip():
+        cfg["u64_host"] = str(data["u64_host"]).strip()
+    for flag in ("ps_menu", "circle_left", "square_f1", "touchpad_mouse",
+                 "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y"):
+        if flag in data:
+            cfg[flag] = bool(data[flag])
+    for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y"):
+        if axis in data:
+            cfg[axis] = max(0.02, min(3.0, float(data[axis])))
+    # The U64 hardwires a USB mouse to control port 1, so the 1351 mouse and
+    # a port-1 joystick can't share it. Keep them mutually exclusive,
+    # favouring whichever the user just changed: enabling the mouse frees
+    # port 1 by moving the joystick to port 2; choosing port 1 for the
+    # joystick turns the mouse off.
+    if cfg.get("touchpad_mouse") and int(cfg.get("port", 2)) == 1:
+        if "touchpad_mouse" in data and bool(data["touchpad_mouse"]):
+            cfg["port"] = 2
         else:
-            self.send_error(404)
+            cfg["touchpad_mouse"] = False
+    write_config(cfg)
+    return web.json_response({"ok": True, "config": cfg})
 
-    def log_message(self, *_):
-        pass  # quiet
+
+async def post_pair(request):
+    try:
+        await _json_body(request)
+    except ValueError:
+        return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
+    try:
+        res = await off(pair_controller)
+    except subprocess.TimeoutExpired:
+        return web.json_response({"ok": False, "message": "pairing timed out"}, status=504)
+    if NOTIFY is not None:
+        NOTIFY.set()
+    return web.json_response(res)
+
+
+async def post_forget(request):
+    try:
+        await _json_body(request)
+    except ValueError:
+        return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
+    try:
+        res = await off(forget_controllers)
+    except subprocess.TimeoutExpired:
+        return web.json_response({"ok": False, "message": "forget timed out"}, status=504)
+    if NOTIFY is not None:
+        NOTIFY.set()
+    return web.json_response(res)
+
+
+async def post_disconnect(request):
+    try:
+        await _json_body(request)
+    except ValueError:
+        return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
+    try:
+        res = await off(disconnect_controllers)
+    except subprocess.TimeoutExpired:
+        return web.json_response({"ok": False, "message": "disconnect timed out"}, status=504)
+    if NOTIFY is not None:
+        NOTIFY.set()
+    return web.json_response(res)
+
+
+async def post_detect_u64(request):
+    try:
+        await _json_body(request)
+    except ValueError:
+        return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
+    return web.json_response(await off(detect_u64))
+
+
+async def on_startup(app):
+    global NOTIFY, EXECUTOR
+    NOTIFY = asyncio.Event()
+    EXECUTOR = ThreadPoolExecutor(max_workers=4)
+
+
+async def on_shutdown(app):
+    global WATCHER
+    if WATCHER is not None:
+        WATCHER.cancel()
+        WATCHER = None
+    CLIENTS.clear()
+    if EXECUTOR is not None:
+        EXECUTOR.shutdown(wait=False)
 
 
 def main():
     if not os.path.exists(CONFIG):
         write_config(dict(DEFAULTS))
-    httpd = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    app = web.Application()
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    app.add_routes([
+        web.get("/", serve_index),
+        web.get("/index.html", serve_index),
+        web.get("/api/config", get_config),
+        web.get("/api/status", get_status),
+        web.get("/api/controller", get_controller),
+        web.get("/api/u64", get_u64),
+        web.get("/api/events", sse_handler),
+        web.post("/api/config", post_config),
+        web.post("/api/pair", post_pair),
+        web.post("/api/forget", post_forget),
+        web.post("/api/disconnect", post_disconnect),
+        web.post("/api/detect_u64", post_detect_u64),
+    ])
     print("DS64 web panel on http://0.0.0.0:%d" % LISTEN_PORT, file=sys.stderr)
-    httpd.serve_forever()
+    web.run_app(app, host="0.0.0.0", port=LISTEN_PORT,
+                print=None, access_log=None, handle_signals=True)
 
 
 if __name__ == "__main__":
