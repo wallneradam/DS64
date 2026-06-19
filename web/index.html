@@ -63,6 +63,12 @@
   .badge.on { background:var(--ok); color:#062b06; }
   .badge.off { background:transparent; color:var(--off); border-color:var(--off); }
   .muted { color:var(--fg); font-size:.82rem; }
+  #batt { display:inline-flex; align-items:center; gap:5px; vertical-align:middle;
+          color:var(--fg); font-size:.82rem; margin-left:12px; }
+  #batt:empty { display:none; }
+  #batt svg { display:block; }
+  #batt.low { color:#ffd24d; }
+  #batt.charging { color:var(--ok); }
   .foot { text-align:center; color:var(--fg); font-size:.78rem; margin:28px 0 0; line-height:1.7; }
   .foot a { color:var(--hi); text-decoration:none; }
   .foot a:hover { text-decoration:underline; }
@@ -112,7 +118,7 @@
   <div class="card">
     <h2>STATUS</h2>
     <div class="row">
-      <span><span id="dot" class="dot"></span><span id="ctrl">no controller</span></span>
+      <span><span id="dot" class="dot"></span><span id="ctrl">no controller</span><span id="batt"></span></span>
       <span id="wasd" class="badge off">WASD OFF</span>
     </div>
     <div class="muted" id="modeline">&nbsp;</div>
@@ -282,12 +288,37 @@ async function save(patch) {
   if (j.config) paintConfig(j.config);
 }
 
+function batterySvg(pct, charging) {
+  const w = Math.max(0, Math.min(16, 16 * pct / 100));   // inner fill width
+  // Lightning bolt punched out of the battery (bg-coloured fill + outline) when charging.
+  const bolt = charging
+    ? '<path d="M12 2.8 L8 8 H10.4 L9.4 11.2 L14 6 H11.4 Z" fill="#352879"'
+      + ' stroke="currentColor" stroke-width="0.6" stroke-linejoin="round"/>'
+    : '';
+  return '<svg width="26" height="14" viewBox="0 0 26 14" aria-hidden="true">'
+    + '<rect x="1" y="2" width="20" height="10" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+    + '<rect x="22" y="5" width="2.4" height="4" rx="1" fill="currentColor"/>'
+    + '<rect x="3" y="4" width="' + w.toFixed(2) + '" height="6" rx="0.6" fill="currentColor"/>'
+    + bolt + '</svg>';
+}
+
 function renderStatus(j) {
   if (j.config && !document.activeElement.closest('input,button')) paintConfig(j.config);
   const s = j.status;
   const live = ('live' in j) ? !!j.live : !!(s && (Date.now()/1000 - s.ts) < 5);
   $('#dot').classList.toggle('live', live);
   $('#ctrl').textContent = (s && live) ? (s.controller || 'waiting for controller...') : 'daemon not running';
+  const batt = $('#batt');
+  if (s && live && typeof s.battery === 'number') {
+    batt.innerHTML = batterySvg(s.battery, !!s.charging) + '<span>' + s.battery + '%</span>';
+    batt.classList.toggle('low', !s.charging && s.battery <= 20);
+    batt.classList.toggle('charging', !!s.charging);
+    batt.title = s.charging ? 'charging' : 'battery';
+  } else {
+    batt.innerHTML = '';
+    batt.classList.remove('low', 'charging');
+    batt.removeAttribute('title');
+  }
   const on = !!(s && live && s.wasd_on);
   const badge = $('#wasd');
   badge.textContent = on ? 'WASD ON' : 'WASD OFF';

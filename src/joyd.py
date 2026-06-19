@@ -55,6 +55,7 @@ DEAD = 64   # analog stick distance from center (128) to count as a direction
 TRIG = 64   # L2/R2 analog trigger threshold (rest 0 .. full 255)
 TICK = 0.15      # seconds between idle/config checks
 HEARTBEAT = 2.0  # refresh status.json at least this often, so the web UI sees us alive
+BATT_INTERVAL = 10.0  # re-read the controller battery sysfs at most this often (changes slowly)
 MENU_DEBOUNCE = 0.4  # ignore PS->menu presses this close together (no double-toggle)
 
 FIRE_BTNS = {E.BTN_SOUTH, E.BTN_TL, E.BTN_TR, E.BTN_TL2, E.BTN_TR2}  # X, L1, R1, L2, R2
@@ -141,6 +142,26 @@ def find_leds():
             "blue": base + ":blue/brightness",
             "global": base + ":global/brightness",
         }
+    return None
+
+
+def find_battery(dev):
+    """Locate the controller's battery as a sysfs power_supply node, or None.
+
+    The hid-playstation driver (DS4 and DS5 alike) exposes the pad battery as
+    ``/sys/class/power_supply/ps-controller-battery-<mac>``, where ``<mac>``
+    matches the evdev device's ``uniq``. Prefer that exact node; fall back to
+    any controller battery (covers the older hid-sony naming) if the uniq is
+    unavailable or does not match.
+    """
+    mac = (dev.uniq or "").lower()
+    if mac:
+        exact = "/sys/class/power_supply/ps-controller-battery-" + mac
+        if os.path.isdir(exact):
+            return exact
+    for pat in ("ps-controller-battery-*", "sony_controller_battery_*"):
+        for path in glob.glob("/sys/class/power_supply/" + pat):
+            return path
     return None
 
 
@@ -231,6 +252,10 @@ class Bridge:
         self.cfg = load_config()
         self.cfg_mtime = self._mtime()
         self.leds = find_leds()
+        self.batt_path = find_battery(dev)   # power_supply sysfs node, or None
+        self.battery = None                  # last-read capacity (0-100), or None
+        self.charging = None                 # last-read charging flag, or None
+        self.last_batt_ts = 0.0
         self.ax = {E.ABS_X: 128, E.ABS_Y: 128, E.ABS_RX: 128, E.ABS_RY: 128,
                    E.ABS_HAT0X: 0, E.ABS_HAT0Y: 0, E.ABS_Z: 0, E.ABS_RZ: 0}
         self.fire_down = set()
@@ -556,15 +581,39 @@ class Bridge:
         print("PS -> menu (toggle)", file=sys.stderr)
 
     # --- status for the web UI ---
+    def _read_battery(self):
+        """Refresh the cached battery reading from sysfs, throttled. Capacity
+        changes slowly, so reading it on every tick would be wasteful."""
+        if self.batt_path is None:
+            return
+        now = time.monotonic()
+        if (now - self.last_batt_ts) < BATT_INTERVAL and self.last_batt_ts:
+            return
+        self.last_batt_ts = now
+        try:
+            with open(self.batt_path + "/capacity") as f:
+                self.battery = int(f.read().strip())
+        except (OSError, ValueError):
+            self.battery = None
+        try:
+            with open(self.batt_path + "/status") as f:
+                self.charging = f.read().strip() == "Charging"
+        except OSError:
+            self.charging = None
+
     def write_status(self, force=False):
+        self._read_battery()
         st = {
             "controller": self.dev.name,
             "wasd_on": bool(self.wasd_on),
             "mode": self.cfg["mode"],
             "port": int(self.cfg["port"]),
+            "battery": self.battery,
+            "charging": self.charging,
             "ts": time.time(),
         }
-        key = (st["controller"], st["wasd_on"], st["mode"], st["port"])
+        key = (st["controller"], st["wasd_on"], st["mode"], st["port"],
+               st["battery"], st["charging"])
         now = time.monotonic()
         if not force and key == self.status_cache and (now - self.last_status_ts) < HEARTBEAT:
             return
@@ -677,7 +726,8 @@ def write_waiting_status():
     """Status while no controller is connected, so the web UI stays informed."""
     cfg = load_config()
     st = {"controller": None, "wasd_on": False,
-          "mode": cfg["mode"], "port": int(cfg["port"]), "ts": time.time()}
+          "mode": cfg["mode"], "port": int(cfg["port"]),
+          "battery": None, "charging": None, "ts": time.time()}
     try:
         os.makedirs(os.path.dirname(STATUS), exist_ok=True)
         tmp = STATUS + ".tmp"
