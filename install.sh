@@ -18,7 +18,7 @@ MODULES_CONF=/etc/modules-load.d/c64u-joy.conf
 INPUT_CONF=/etc/bluetooth/input.conf
 NM_PSAVE_CONF=/etc/NetworkManager/conf.d/00-ds64-wifi-powersave-off.conf
 CONFIG_DIR=/etc/ds64
-ARM_FREQ_CAP="${DS64_ARM_FREQ:-900}"   # MHz cap; tune via DS64_ARM_FREQ (600 = safest)
+ARM_FREQ_CAP="${DS64_ARM_FREQ:-800}"   # MHz cap; tune via DS64_ARM_FREQ (600 = safest)
 UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web)
 
 REBOOT_NEEDED=0
@@ -105,8 +105,9 @@ fi
 # Cap the CPU to cut peak current draw. The Pi runs off the C64's USB power
 # (non-spec supply); the 1.8 GHz turbo current spike destabilises the shared
 # WiFi/BT radio -> controller drops + `hci0: command tx timeout` firmware wedge.
-# A controller bridge needs no speed. (Verified: 600 MHz killed the wedge; the
-# default cap is a balanced 1000 MHz -- set DS64_ARM_FREQ to tune.)
+# A controller bridge needs no speed. (600 MHz fully killed the wedge; 900 MHz
+# still wedged rarely, so the default cap is a balanced 800 MHz -- set
+# DS64_ARM_FREQ to tune, e.g. 600 if a rare wedge persists.)
 say "CPU power cap in $CONFIG_TXT (arm_boost=0, arm_freq=$ARM_FREQ_CAP)"
 cpu_changed=0
 if grep -qE '^[[:space:]]*arm_boost=0[[:space:]]*$' "$CONFIG_TXT"; then :
