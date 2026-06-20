@@ -12,7 +12,7 @@
 set -euo pipefail
 
 DEST="${DS64_DEST:-/opt/ds64}"
-BRANCH="${DS64_BRANCH:-main}"
+BRANCH_OVERRIDE=""   # set by --dev / --main / --branch; empty = DS64_BRANCH env, else main
 UNITS=(ds64-gadget ds64-joyd ds64-web)
 # Repo paths whose changes a code restart does NOT apply (need a full reinstall).
 STRUCT_RE='^(setup/systemd/|install\.sh$|setup/ds64-(lock|unlock|persist\.sh)$|setup/ds64-update$)'
@@ -23,8 +23,36 @@ chg()  { printf '    ->  %s\n' "$*"; }
 warn() { printf '    [!] %s\n' "$*" >&2; }
 die()  { printf '\n[!] %s\n' "$*" >&2; exit 1; }
 
+usage() {
+    cat <<'EOF'
+Usage: sudo ds64-update [options]
+  --dev            update from the 'dev' branch
+  --main           update from the 'main' branch (default)
+  -b, --branch N   update from branch N
+  -h, --help       show this help and exit
+
+With no option, 'main' is updated. --dev switches /opt/ds64 onto the dev branch
+and updates from there; a later plain `ds64-update` switches back to main.
+DS64_BRANCH overrides the default when no option is given.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dev)       BRANCH_OVERRIDE=dev ;;
+        --main)      BRANCH_OVERRIDE=main ;;
+        -b|--branch) shift; [ $# -gt 0 ] || die "--branch needs a name"; BRANCH_OVERRIDE="$1" ;;
+        -h|--help)   usage; exit 0 ;;
+        *)           die "unknown option: $1 (try --help)" ;;
+    esac
+    shift
+done
+
 [ "$(id -u)" -eq 0 ] || die "Run as root: sudo ds64-update"
 [ -d "$DEST/.git" ] || die "$DEST is not a git checkout -- run the installer first"
+
+# Branch precedence: explicit flag > DS64_BRANCH env > main.
+BRANCH="${BRANCH_OVERRIDE:-${DS64_BRANCH:-main}}"
 
 # The reboot-free path needs $DEST to be writable. When the appliance is locked,
 # that is true ONLY if ds64-lock relocated it onto the persistent image (a bind
@@ -46,19 +74,25 @@ fi
 say "Source: $DEST ($BRANCH)"
 git -C "$DEST" remote get-url origin >/dev/null 2>&1 \
     || die "$DEST has no 'origin' remote -- run the installer first"
+cur_branch=$(git -C "$DEST" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
 before=$(git -C "$DEST" rev-parse HEAD)
-git -C "$DEST" fetch -q --depth=1 origin "$BRANCH"
+git -C "$DEST" fetch -q --depth=1 origin "$BRANCH" \
+    || die "cannot fetch branch '$BRANCH' from origin -- does it exist?"
 after=$(git -C "$DEST" rev-parse "origin/$BRANCH")
-if [ "$before" = "$after" ]; then
-    ok "already up to date (${after:0:7})"
+if [ "$before" = "$after" ] && [ "$cur_branch" = "$BRANCH" ]; then
+    ok "already up to date (${after:0:7}) on $BRANCH"
     exit 0
 fi
 
-# What changed? Capture BEFORE the reset, while both trees are still present.
+# What changed? Capture BEFORE the switch, while both trees are still present.
 changed=$(git -C "$DEST" diff --name-only "$before" "$after")
-git -C "$DEST" reset -q --hard "origin/$BRANCH"
+git -C "$DEST" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
 git -C "$DEST" clean -qfd
-chg "updated ${before:0:7} -> ${after:0:7}"
+if [ "$cur_branch" = "$BRANCH" ]; then
+    chg "updated ${before:0:7} -> ${after:0:7}"
+else
+    chg "switched $cur_branch -> $BRANCH (${after:0:7})"
+fi
 
 say "Restarting services"
 systemctl restart "${UNITS[@]}"
