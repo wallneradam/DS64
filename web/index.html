@@ -196,42 +196,63 @@
   </div>
 
   <div class="card">
-    <h2>MOUSE (TOUCHPAD)</h2>
+    <h2>MOUSE</h2>
     <div class="row">
-      <span class="muted">touchpad &rarr; 1351 mouse (port 1)</span>
+      <span class="muted">1351 mouse on port 1 (touchpad and/or USB)</span>
       <span class="seg" id="touchpad_mouse">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
-    <div class="row mopt">
+    <div class="muted" style="margin-top:8px">Master switch for both the touchpad and a USB mouse. Turning it on moves the joystick to Port 2, since the 1351 takes port 1.</div>
+  </div>
+
+  <div class="card" id="usbmouse" style="display:none">
+    <h2>MOUSE (USB)</h2>
+    <div class="muted" style="margin-bottom:10px">A USB mouse is plugged into the Pi &mdash; it drives the 1351 on port 1, so the touchpad steps aside.</div>
+    <div class="row">
+      <span class="muted">speed</span>
+      <span class="tctl"><input type="range" id="ems" min="0.1" max="3" step="0.05">
+            <input type="number" id="emsval" class="numbox" min="0.02" max="3" step="0.05"></span>
+    </div>
+    <div class="row">
+      <span class="muted">use the touchpad at the same time</span>
+      <span class="seg" id="ext_mouse_with_touchpad">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+  </div>
+
+  <div class="card" id="touchmouse">
+    <h2>MOUSE (TOUCHPAD)</h2>
+    <div class="row">
       <span class="muted">speed X (horizontal)</span>
       <span class="tctl"><input type="range" id="msx" min="0.02" max="1" step="0.01">
             <input type="number" id="msxval" class="numbox" min="0.02" max="3" step="0.01"></span>
     </div>
-    <div class="row mopt">
+    <div class="row">
       <span class="muted">speed Y (vertical)</span>
       <span class="tctl"><input type="range" id="msy" min="0.02" max="1" step="0.01">
             <input type="number" id="msyval" class="numbox" min="0.02" max="3" step="0.01"></span>
     </div>
-    <div class="row mopt">
+    <div class="row">
       <span class="muted">two fingers &rarr; right button</span>
       <span class="seg" id="touchpad_two_finger_right">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
-    <div class="row mopt">
+    <div class="row">
       <span class="muted">invert horizontal (X)</span>
       <span class="seg" id="mouse_invert_x">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
-    <div class="row mopt">
+    <div class="row">
       <span class="muted">invert vertical (Y)</span>
       <span class="seg" id="mouse_invert_y">
         <button data-v="1">ON</button><button data-v="0">OFF</button>
       </span>
     </div>
-    <div class="muted" style="margin-top:8px">The DS4/DS5 touchpad drives the GEOS cursor as a 1351 on port 1, so turning it on moves the joystick to Port 2. Lower = slower; the pad is short vertically, so Y is usually a touch faster than X.</div>
+    <div class="muted" style="margin-top:8px">The DS4/DS5 touchpad drives the GEOS cursor as a 1351 on port 1. Lower = slower; the pad is short vertically, so Y is usually a touch faster than X.</div>
   </div>
 
   <footer class="foot">
@@ -250,10 +271,19 @@
 <script>
 const $ = s => document.querySelector(s);
 let cfg = null;
+let extMousePresent = false;   // last status: is a USB mouse plugged into the Pi?
 
 function paintSeg(id, val) {
   document.querySelectorAll('#' + id + ' button').forEach(b =>
     b.classList.toggle('on', b.dataset.v == String(val)));
+}
+
+// USB mouse present -> show its section and hide the touchpad's, unless the user
+// asked for both at once. Driven by status (presence) + config (the toggle).
+function updateMouseVis() {
+  const simul = !!(cfg && cfg.ext_mouse_with_touchpad);
+  $('#usbmouse').style.display = extMousePresent ? '' : 'none';
+  $('#touchmouse').style.display = (!extMousePresent || simul) ? '' : 'none';
 }
 
 function paintConfig(c) {
@@ -268,10 +298,13 @@ function paintConfig(c) {
   paintSeg('touchpad_two_finger_right', c.touchpad_two_finger_right ? 1 : 0);
   paintSeg('mouse_invert_x', c.mouse_invert_x ? 1 : 0);
   paintSeg('mouse_invert_y', c.mouse_invert_y ? 1 : 0);
+  paintSeg('ext_mouse_with_touchpad', c.ext_mouse_with_touchpad ? 1 : 0);
   const sx = Number(c.mouse_sensitivity_x), sy = Number(c.mouse_sensitivity_y);
   $('#msx').value = Math.min(1, Math.max(0.02, sx)); $('#msxval').value = sx;
   $('#msy').value = Math.min(1, Math.max(0.02, sy)); $('#msyval').value = sy;
-  document.querySelectorAll('.mopt').forEach(r => r.style.display = c.touchpad_mouse ? '' : 'none');
+  const es = Number(c.ext_mouse_sensitivity);
+  $('#ems').value = Math.min(3, Math.max(0.1, es)); $('#emsval').value = es;
+  updateMouseVis();
   $('#timeout').value = Math.min(10, Math.max(0.5, Number(c.idle_timeout)));
   $('#toval').value = Number(c.idle_timeout);
   const auto = c.mode === 'auto';
@@ -306,6 +339,8 @@ function renderStatus(j) {
   if (j.config && !document.activeElement.closest('input,button')) paintConfig(j.config);
   const s = j.status;
   const live = ('live' in j) ? !!j.live : !!(s && (Date.now()/1000 - s.ts) < 5);
+  extMousePresent = !!(s && live && s.ext_mouse);
+  updateMouseVis();
   $('#dot').classList.toggle('live', live);
   $('#ctrl').textContent = (s && live) ? (s.controller || 'waiting for controller...') : 'daemon not running';
   const batt = $('#batt');
@@ -350,11 +385,12 @@ $('#toval').onchange = e => {
   save({idle_timeout: v});
 };
 
-['touchpad_mouse', 'touchpad_two_finger_right', 'mouse_invert_x', 'mouse_invert_y'].forEach(id =>
+['touchpad_mouse', 'touchpad_two_finger_right', 'mouse_invert_x', 'mouse_invert_y',
+ 'ext_mouse_with_touchpad'].forEach(id =>
   document.querySelectorAll('#' + id + ' button').forEach(b =>
     b.onclick = () => save({[id]: b.dataset.v === '1'})));
 
-function bindSensitivity(slider, box, key) {
+function bindSensitivity(slider, box, key, slMin, slMax) {
   $(slider).oninput = e => { $(box).value = e.target.value; };
   $(slider).onchange = e => save({[key]: Number(e.target.value)});
   $(box).onchange = e => {
@@ -362,12 +398,13 @@ function bindSensitivity(slider, box, key) {
     if (!isFinite(v)) { paintConfig(cfg); return; }
     v = Math.max(0.02, Math.min(3, v));
     e.target.value = v;
-    $(slider).value = Math.min(1, v);
+    $(slider).value = Math.min(slMax, Math.max(slMin, v));
     save({[key]: v});
   };
 }
-bindSensitivity('#msx', '#msxval', 'mouse_sensitivity_x');
-bindSensitivity('#msy', '#msyval', 'mouse_sensitivity_y');
+bindSensitivity('#msx', '#msxval', 'mouse_sensitivity_x', 0.02, 1);
+bindSensitivity('#msy', '#msyval', 'mouse_sensitivity_y', 0.02, 1);
+bindSensitivity('#ems', '#emsval', 'ext_mouse_sensitivity', 0.1, 3);
 
 let lastLog = '';
 function setResult(html, cls) { const el = $('#pairresult'); el.innerHTML = html; el.className = cls || 'muted'; }

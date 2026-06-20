@@ -12,12 +12,21 @@ interrupt pipe per interface and polls each independently, emulating the mouse
 as a 1351 on control port 1 -- so one controller is both a joystick (port 2)
 and a mouse (port 1) at the same time.
 
+A real USB mouse plugged into the Pi is forwarded through the SAME hidg1, so the
+U64 still sees only one device (our gadget) -- a second separate device on the
+U64's own USB host corrupts the keyboard pipe and drops the held joystick, but a
+mouse hanging off the Pi cannot. When a USB mouse is present it takes over the
+1351 and the touchpad steps aside; `ext_mouse_with_touchpad` (the square button /
+the web panel) lets both drive the cursor at once. Left/right/middle buttons are
+all forwarded.
+
 Directions: either analog stick OR the D-pad. Fire: X / L1 / R1 / L2 / R2.
 Optional extra buttons (each toggled in the config):
   PS button -> toggle the U64 menu on release (via the menu_button API)
   circle    -> Left (the "back" direction inside the U64 menu)
   options   -> F1 (a C64 function key, sent over the keyboard gadget)
   share     -> swap the joystick between control port 1 and 2 (writes the config)
+  square    -> toggle "use the touchpad alongside a USB mouse" (writes the config)
 
 Modes (from the shared config file, live-reloaded):
   auto   - any real input switches the U64 into WASD mode; after `idle_timeout`
@@ -82,6 +91,8 @@ DEFAULTS = {
     "touchpad_two_finger_right": True,  # two fingers -> right mouse button
     "mouse_invert_x": False,            # flip horizontal motion if it feels reversed
     "mouse_invert_y": False,            # flip vertical motion if it feels reversed
+    "ext_mouse_sensitivity": 1.0,       # scale on a USB mouse's relative deltas (one value, no X/Y split)
+    "ext_mouse_with_touchpad": False,   # also drive the 1351 from the touchpad while a USB mouse is on
 }
 
 SWAPPER_PATH = "/v1/configs/U64%20Specific%20Settings/Joystick%20Swapper"
@@ -186,6 +197,28 @@ def find_touchpad():
     return None
 
 
+def find_mouse():
+    """Locate an external relative-pointing mouse plugged into the Pi, or None.
+
+    A real USB mouse reports relative motion (EV_REL REL_X/REL_Y) plus BTN_LEFT;
+    the DS4/DS5 touchpad is absolute (EV_ABS/ABS_MT, no REL_X) so it is matched by
+    find_touchpad() instead and skipped here. Non-matching nodes are closed so a
+    periodic rescan does not leak file descriptors."""
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        caps = dev.capabilities()
+        rel = caps.get(E.EV_REL, [])
+        keys = caps.get(E.EV_KEY, [])
+        if (E.REL_X in rel and E.REL_Y in rel and E.BTN_LEFT in keys
+                and "touchpad" not in dev.name.lower()):
+            return dev
+        dev.close()
+    return None
+
+
 class Touchpad:
     """Turn a DS4/DS5 touchpad evdev stream into relative mouse motion + buttons.
 
@@ -285,7 +318,7 @@ class Bridge:
         # Two independent HID gadget fds, one per interface. O_NONBLOCK so a write
         # can never freeze the bridge if the C64 stops draining an endpoint -- a
         # dropped report is re-sent (keys) or discarded (mouse motion is
-        # fire-and-forget). The mouse fd opens only when a touchpad is present.
+        # fire-and-forget).
         self.kbd_fd = os.open(HIDG_KBD, os.O_WRONLY | os.O_NONBLOCK)
         self.mouse_fd = None
         self.last_kbd_report = None
@@ -297,6 +330,9 @@ class Bridge:
         self.last_status_ts = 0.0
         self.sel = None
         self.tp = None
+        self.ext_mouse = None        # external USB mouse on the Pi, forwarded to hidg1
+        self.ext_buttons = 0         # held button mask from the external mouse
+        self.last_ext_scan = 0.0
         self.last_buttons = 0
         self.accum_x = 0.0           # fractional carry, so slow drags are not lost
         self.accum_y = 0.0
@@ -307,17 +343,25 @@ class Bridge:
         self._rest_q = queue.Queue(maxsize=8)
         self._last_menu_ts = 0.0
         threading.Thread(target=self._rest_worker, daemon=True).start()
-        # Always bind the touchpad if one is present; whether its motion is sent is
-        # gated live by the touchpad_mouse config (see poll_touchpad), so the mouse
-        # switches on and off from the web panel without restarting joyd.
+        # Open the mouse endpoint whenever the gadget exposes it (full keyboard+
+        # mouse gadget). Needed for BOTH the controller touchpad and an external
+        # USB mouse on the Pi; a no-op (None) in a keyboard-only gadget.
+        try:
+            self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as ex:
+            print("mouse gadget open failed:", ex, file=sys.stderr)
+        # Bind the touchpad if present; whether its motion is sent is gated live by
+        # the touchpad_mouse config (see poll_touchpad), so the mouse switches on
+        # and off from the web panel without restarting joyd.
         tp_dev = find_touchpad()
         if tp_dev is not None:
             self.tp = Touchpad(tp_dev)
-            try:
-                self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
-            except OSError as ex:
-                print("mouse gadget open failed:", ex, file=sys.stderr)
             print("Touchpad:", tp_dev.name, tp_dev.path, file=sys.stderr)
+        # An external USB mouse, if already plugged in, is preferred over the
+        # touchpad. Hotplug (plug/unplug while running) is handled in tick().
+        self.ext_mouse = find_mouse()
+        if self.ext_mouse is not None:
+            print("External mouse:", self.ext_mouse.name, self.ext_mouse.path, file=sys.stderr)
 
     # --- config ---
     def _mtime(self):
@@ -331,9 +375,16 @@ class Bridge:
         if m != self.cfg_mtime:
             self.cfg_mtime = m
             old_port = self.cfg.get("port")
+            old_mouse = (self.cfg.get("touchpad_mouse"),
+                         self.cfg.get("ext_mouse_with_touchpad"))
             self.cfg = load_config()
             if self.wasd_on and self.cfg.get("port") != old_port:
                 self.rest_put("WASD Port %d" % int(self.cfg["port"]))
+            # Disabling the mouse or handing the 1351 between sources: release any
+            # held button now so it can't stick, regardless of which source moves next.
+            if old_mouse != (self.cfg.get("touchpad_mouse"),
+                             self.cfg.get("ext_mouse_with_touchpad")):
+                self.mouse_off()
             self.write_status(force=True)
 
     # --- input state ---
@@ -442,7 +493,19 @@ class Bridge:
             except OSError:
                 self.mouse_fd = None
 
-    # --- touchpad -> 1351 mouse ---
+    # --- touchpad / external mouse -> 1351 mouse ---
+    def mouse_enabled(self):
+        """The master mouse switch (web panel `touchpad_mouse`, also driven by the
+        share/port logic). Logical only -- hidg1 stays enumerated either way, so the
+        1351 keeps port-1 timing; this just gates whether any source emits."""
+        return self.cfg.get("touchpad_mouse", True)
+
+    def touch_active(self):
+        """The controller touchpad drives the 1351 when the mouse is enabled and
+        either no USB mouse is plugged in, or the user asked for both at once."""
+        return self.mouse_enabled() and (
+            self.ext_mouse is None or self.cfg.get("ext_mouse_with_touchpad", False))
+
     def poll_touchpad(self, now):
         if self.tp is None:
             return
@@ -454,33 +517,71 @@ class Bridge:
             print("touchpad lost:", ex, file=sys.stderr)
             self.drop_touchpad()
             return
-        # Drain the events above even when disabled (so re-enabling never jumps the
-        # cursor), but only turn them into mouse reports while the mouse is on.
-        if not self.cfg.get("touchpad_mouse", True):
+        # Drain the events above even when not the active source (so re-enabling
+        # never jumps the cursor); release a held button only when the mouse is
+        # fully off -- a USB mouse owning the 1351 manages its own buttons.
+        if not self.mouse_enabled():
             self.mouse_off()
             return
-        self.emit_mouse(dx, dy, left, right)
-
-    def mouse_off(self):
-        """Mouse switched off at runtime: drop any carried motion and release a
-        held button once, so the C64 never sees a stuck 1351 button."""
-        self.accum_x = self.accum_y = 0.0
-        if self.last_buttons and self._emit("mouse", bytes(3)):
-            self.last_buttons = 0
-
-    def emit_mouse(self, dx, dy, left, right):
+        if not self.touch_active():
+            return
+        buttons = 0x01 if left else 0
+        if right and self.cfg.get("touchpad_two_finger_right", True):
+            buttons |= 0x02
+        # Invert is a touchpad-only convenience; a USB mouse is forwarded as-is.
         if self.cfg.get("mouse_invert_x", False):
             dx = -dx
         if self.cfg.get("mouse_invert_y", False):
             dy = -dy
         legacy = float(self.cfg.get("mouse_sensitivity", 1.0))
-        self.accum_x += dx * float(self.cfg.get("mouse_sensitivity_x", legacy))
-        self.accum_y += dy * float(self.cfg.get("mouse_sensitivity_y", legacy))
+        self.emit_mouse(dx, dy, buttons,
+                        float(self.cfg.get("mouse_sensitivity_x", legacy)),
+                        float(self.cfg.get("mouse_sensitivity_y", legacy)))
+
+    def poll_ext_mouse(self, now):
+        """Forward an external USB mouse (relative motion + 3 buttons) to hidg1."""
+        if self.ext_mouse is None:
+            return
+        dx = dy = 0
+        try:
+            for e in self.ext_mouse.read():
+                if e.type == E.EV_REL:
+                    if e.code == E.REL_X:
+                        dx += e.value
+                    elif e.code == E.REL_Y:
+                        dy += e.value
+                elif e.type == E.EV_KEY:
+                    bit = {E.BTN_LEFT: 0x01, E.BTN_RIGHT: 0x02,
+                           E.BTN_MIDDLE: 0x04}.get(e.code)
+                    if bit is not None:
+                        if e.value:
+                            self.ext_buttons |= bit
+                        else:
+                            self.ext_buttons &= ~bit
+        except BlockingIOError:
+            return
+        except OSError as ex:
+            print("ext mouse lost:", ex, file=sys.stderr)
+            self.drop_ext_mouse()
+            return
+        if not self.mouse_enabled():
+            self.mouse_off()
+            return
+        sens = float(self.cfg.get("ext_mouse_sensitivity", 1.0))
+        self.emit_mouse(dx, dy, self.ext_buttons, sens, sens)
+
+    def mouse_off(self):
+        """Mouse switched off / source handover: drop any carried motion and
+        release a held button once, so the C64 never sees a stuck 1351 button."""
+        self.accum_x = self.accum_y = 0.0
+        if self.last_buttons and self._emit("mouse", bytes(3)):
+            self.last_buttons = 0
+
+    def emit_mouse(self, dx, dy, buttons, sx, sy):
+        self.accum_x += dx * sx
+        self.accum_y += dy * sy
         mx = max(-127, min(127, int(self.accum_x)))
         my = max(-127, min(127, int(self.accum_y)))
-        buttons = 0x01 if left else 0
-        if right and self.cfg.get("touchpad_two_finger_right", True):
-            buttons |= 0x02
         # Relative deltas must not be deduped (two identical moves are two moves),
         # but skip empty reports: nothing moved and no button changed.
         if mx == 0 and my == 0 and buttons == self.last_buttons:
@@ -502,6 +603,49 @@ class Bridge:
             except (KeyError, ValueError, OSError):
                 pass
         self.tp = None
+
+    def drop_ext_mouse(self):
+        """External mouse unplugged or errored: unregister, close, and hand the
+        1351 back to the touchpad cleanly (release any held button / motion)."""
+        if self.sel is not None and self.ext_mouse is not None:
+            try:
+                self.sel.unregister(self.ext_mouse.fileno())
+            except (KeyError, ValueError, OSError):
+                pass
+        if self.ext_mouse is not None:
+            try:
+                self.ext_mouse.close()
+            except OSError:
+                pass
+        self.ext_mouse = None
+        self.ext_buttons = 0
+        self.mouse_off()
+
+    def refresh_ext_mouse(self, now):
+        """Detect an external USB mouse appearing at runtime (hotplug). Scans at
+        most once a second, and only while none is bound -- a connected mouse stops
+        the scan, so there is no fd churn. Disappearance is caught in poll_ext_mouse."""
+        if self.ext_mouse is not None or self.sel is None:
+            return
+        if now - self.last_ext_scan < 1.0:
+            return
+        self.last_ext_scan = now
+        dev = find_mouse()
+        if dev is None:
+            return
+        try:
+            self.sel.register(dev.fileno(), selectors.EVENT_READ, "extmouse")
+        except (KeyError, ValueError, OSError) as ex:
+            print("ext mouse register failed:", ex, file=sys.stderr)
+            try:
+                dev.close()
+            except OSError:
+                pass
+            return
+        self.ext_mouse = dev
+        self.ext_buttons = 0
+        self.mouse_off()   # clean handover from the touchpad
+        print("External mouse:", dev.name, dev.path, file=sys.stderr)
 
     def set_color(self, rgb):
         if not self.leds:
@@ -587,6 +731,18 @@ class Bridge:
         write_config(cfg)
         print("share -> swap to port", new_port, file=sys.stderr)
 
+    def toggle_ext_with_touchpad(self):
+        """Square button: flip "use the touchpad alongside a USB mouse", exactly
+        like the web panel's simultaneous-touchpad switch. Writes the shared config;
+        reload_config_if_changed re-applies it and refreshes the web UI over SSE.
+        Matters only while a USB mouse is plugged in (otherwise the pad already
+        owns the 1351) -- a couch shortcut to grab the touchpad without unplugging."""
+        cfg = load_config()
+        cfg["ext_mouse_with_touchpad"] = not cfg.get("ext_mouse_with_touchpad", False)
+        write_config(cfg)
+        print("square -> touchpad with USB mouse:", cfg["ext_mouse_with_touchpad"],
+              file=sys.stderr)
+
     def menu_tap(self):
         """Toggle the U64 menu via the menu_button API, which simulates the
         physical menu button -- the firmware's real open/close toggle. A USB
@@ -630,10 +786,11 @@ class Bridge:
             "port": int(self.cfg["port"]),
             "battery": self.battery,
             "charging": self.charging,
+            "ext_mouse": self.ext_mouse is not None,
             "ts": time.time(),
         }
         key = (st["controller"], st["wasd_on"], st["mode"], st["port"],
-               st["battery"], st["charging"])
+               st["battery"], st["charging"], st["ext_mouse"])
         now = time.monotonic()
         if not force and key == self.status_cache and (now - self.last_status_ts) < HEARTBEAT:
             return
@@ -657,12 +814,20 @@ class Bridge:
             sel.register(self.dev.fileno(), selectors.EVENT_READ, "pad")
             if self.tp is not None:
                 sel.register(self.tp.dev.fileno(), selectors.EVENT_READ, "touch")
+            if self.ext_mouse is not None:
+                try:
+                    sel.register(self.ext_mouse.fileno(), selectors.EVENT_READ, "extmouse")
+                except (KeyError, ValueError, OSError) as ex:
+                    print("ext mouse register failed:", ex, file=sys.stderr)
+                    self.ext_mouse = None
             while True:
                 events = sel.select(timeout=TICK)
                 now = time.monotonic()
                 for key, _ in events:
                     if key.data == "touch":
                         self.poll_touchpad(now)
+                    elif key.data == "extmouse":
+                        self.poll_ext_mouse(now)
                     else:
                         try:
                             for e in self.dev.read():
@@ -678,6 +843,11 @@ class Bridge:
                 pass
             self._rest_call("put 'Normal'", self._swapper_url("Normal"))
             self.wasd_on = False
+            if self.ext_mouse is not None:
+                try:
+                    self.ext_mouse.close()
+                except OSError:
+                    pass
             for fd in (self.kbd_fd, self.mouse_fd):
                 if fd is not None:
                     try:
@@ -721,12 +891,17 @@ class Bridge:
             if e.value == 1 and self.cfg.get("share_swap", True):
                 self.swap_port()
             return
+        elif e.type == E.EV_KEY and e.code == E.BTN_WEST:  # square -> touchpad alongside USB mouse
+            if e.value == 1:
+                self.toggle_ext_with_touchpad()
+            return
         else:
             return
         self.react(now)
 
     def tick(self, now):
         self.reload_config_if_changed()
+        self.refresh_ext_mouse(now)
         self.react(now)
 
     def react(self, now):
@@ -747,7 +922,8 @@ def write_waiting_status():
     cfg = load_config()
     st = {"controller": None, "wasd_on": False,
           "mode": cfg["mode"], "port": int(cfg["port"]),
-          "battery": None, "charging": None, "ts": time.time()}
+          "battery": None, "charging": None, "ext_mouse": False,
+          "ts": time.time()}
     try:
         os.makedirs(os.path.dirname(STATUS), exist_ok=True)
         tmp = STATUS + ".tmp"

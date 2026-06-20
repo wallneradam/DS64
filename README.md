@@ -237,6 +237,29 @@ mouse on you get the mouse on port 1 and the joystick on port 2 — both at once
 Only the DualShock 4 and DualSense have a touchpad; other pads keep the joystick
 but have no mouse.
 
+## Mouse (USB)
+
+You can also plug a **real USB mouse into the Pi** and DS64 forwards it to the C64
+as the **1351 mouse** — with an adjustable **speed**, which a mouse plugged
+straight into the Ultimate doesn't give you.
+
+**Why route it through the Pi instead of the Ultimate's own USB port?** There's a
+quirk in the **C64 Ultimate firmware**: a separate USB **mouse** plugged directly
+into the Ultimate **fights with the keyboard** — and to the Ultimate, the DS64
+bridge *is* the keyboard. The extra mouse corrupts the keyboard's USB pipe and
+**intermittently drops the held joystick direction** ("moves a bit then stops").
+DS64 sidesteps this entirely: the Pi already pretends to be one combined
+keyboard-and-mouse device, so when the mouse hangs off the **Pi** the Ultimate
+still sees only **one** device and there's nothing to collide with. As a bonus you
+get a **sensitivity** control the firmware's own mouse path lacks.
+
+When a USB mouse is detected, the panel shows a **MOUSE (USB)** card and the
+**MOUSE (TOUCHPAD)** card steps aside — the USB mouse takes over the 1351. Want
+both? Turn on **use the touchpad at the same time** (also the **square** button on
+the controller) and the touchpad comes back alongside it. The master **MOUSE**
+switch above enables or disables both at once; like the touchpad, it's the same
+**port 1** 1351, so enabling it moves the joystick to **port 2**.
+
 ## Compatible controllers
 
 The bridge works with any standard gamepad Linux recognises, so it isn't tied to
@@ -307,10 +330,11 @@ hardening in the first place, prefix the install command with `DS64_NO_HARDEN=1`
   cable can fail the same way; try a shorter, known-good one.
 - **A held direction "moves a bit then stops", or input is erratic?** Check for
   **another USB input device plugged into the Commodore Ultimate** — a wireless
-  mouse or keyboard receiver (e.g. an old Logitech dongle) shows up as a second USB
-  keyboard, and its reports collide with the bridge's, intermittently releasing the
-  held key. Unplug any such dongle; the DS64 should be the only keyboard-like USB
-  device on the Ultimate.
+  mouse or keyboard receiver (e.g. an old Logitech dongle) collides with the
+  bridge's keyboard reports and intermittently releases the held key. Unplug it;
+  the DS64 should be the only keyboard-like USB device on the Ultimate. If it's a
+  **mouse** you wanted there, plug it into the **Pi** instead — DS64 forwards it as
+  the 1351 with no such conflict (see [Mouse (USB)](#mouse-usb)).
 
 ## Limitations
 

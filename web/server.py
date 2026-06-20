@@ -49,6 +49,8 @@ DEFAULTS = {
     "touchpad_two_finger_right": True,
     "mouse_invert_x": False,
     "mouse_invert_y": False,
+    "ext_mouse_sensitivity": 1.0,
+    "ext_mouse_with_touchpad": False,
 }
 
 
@@ -468,10 +470,11 @@ async def post_config(request):
     if "u64_host" in data and str(data["u64_host"]).strip():
         cfg["u64_host"] = str(data["u64_host"]).strip()
     for flag in ("ps_menu", "circle_left", "options_f1", "share_swap", "touchpad_mouse",
-                 "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y"):
+                 "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y",
+                 "ext_mouse_with_touchpad"):
         if flag in data:
             cfg[flag] = bool(data[flag])
-    for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y"):
+    for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y", "ext_mouse_sensitivity"):
         if axis in data:
             cfg[axis] = max(0.02, min(3.0, float(data[axis])))
     # The U64 hardwires a USB mouse to control port 1, so the 1351 mouse and

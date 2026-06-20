@@ -14,5 +14,7 @@
   "mouse_sensitivity_y": 0.2,
   "touchpad_two_finger_right": true,
   "mouse_invert_x": false,
-  "mouse_invert_y": false
+  "mouse_invert_y": false,
+  "ext_mouse_sensitivity": 1.0,
+  "ext_mouse_with_touchpad": false
 }
