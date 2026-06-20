@@ -299,6 +299,138 @@ class Touchpad:
         return cur[0] - prev[0], cur[1] - prev[1]
 
 
+class ExtMouse:
+    """An external USB mouse plugged into the Pi, read as relative motion + buttons.
+
+    Symmetric with Touchpad: read() drains pending evdev events and returns the
+    accumulated (dx, dy, buttons) for this batch; held buttons persist across
+    reads in self.buttons. The wrapped evdev device is reachable as self.dev for
+    the selector (fileno) and cleanup (close)."""
+
+    def __init__(self, dev):
+        self.dev = dev
+        self.buttons = 0
+
+    def read(self):
+        dx = dy = 0
+        for e in self.dev.read():
+            if e.type == E.EV_REL:
+                if e.code == E.REL_X:
+                    dx += e.value
+                elif e.code == E.REL_Y:
+                    dy += e.value
+            elif e.type == E.EV_KEY:
+                bit = {E.BTN_LEFT: 0x01, E.BTN_RIGHT: 0x02,
+                       E.BTN_MIDDLE: 0x04}.get(e.code)
+                if bit is not None:
+                    if e.value:
+                        self.buttons |= bit
+                    else:
+                        self.buttons &= ~bit
+        return dx, dy, self.buttons
+
+
+class MouseForwarder:
+    """The hidg1 1351-mouse gadget endpoint plus the relative-motion accumulator.
+
+    Both the controller touchpad and an external USB mouse feed it through emit();
+    it is also driven standalone (no controller) so a USB mouse on the Pi keeps
+    working independently of any Bluetooth controller. O_NONBLOCK: a write can
+    never freeze the caller if the C64 stops draining the endpoint -- a dropped
+    report is simply discarded (mouse motion is fire-and-forget) and the fd is
+    reopened at most once a second when the host is absent."""
+
+    def __init__(self):
+        self.fd = None
+        self.accum_x = 0.0           # fractional carry, so slow drags are not lost
+        self.accum_y = 0.0
+        self.last_buttons = 0
+        self.last_reopen = 0.0
+        try:
+            self.fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as ex:
+            print("mouse gadget open failed:", ex, file=sys.stderr)
+
+    def emit(self, dx, dy, buttons, sx, sy):
+        self.accum_x += dx * sx
+        self.accum_y += dy * sy
+        mx = max(-127, min(127, int(self.accum_x)))
+        my = max(-127, min(127, int(self.accum_y)))
+        # Relative deltas must not be deduped (two identical moves are two moves),
+        # but skip empty reports: nothing moved and no button changed.
+        if mx == 0 and my == 0 and buttons == self.last_buttons:
+            return
+        # 3-byte mouse payload: buttons, relative dx, relative dy (no report ID).
+        # Commit the accumulator and button state only after the report actually
+        # went out, so a dropped (host-not-reading) report retries on the next
+        # event instead of losing motion.
+        if self._write(bytes([buttons, mx & 0xFF, my & 0xFF])):
+            self.accum_x -= mx
+            self.accum_y -= my
+            self.last_buttons = buttons
+
+    def off(self):
+        """Mouse switched off / source handover: drop any carried motion and
+        release a held button once, so the C64 never sees a stuck 1351 button."""
+        self.accum_x = self.accum_y = 0.0
+        if self.last_buttons and self._write(bytes(3)):
+            self.last_buttons = 0
+
+    def _write(self, report):
+        if self.fd is None:
+            self._reopen()          # gadget may have appeared after we started
+            if self.fd is None:
+                return False
+        try:
+            os.write(self.fd, report)
+            return True
+        except BlockingIOError:
+            return False
+        except OSError as ex:
+            if ex.errno not in HID_HOST_ABSENT:
+                raise
+            self._reopen()
+            return False
+
+    def _reopen(self):
+        now = time.monotonic()
+        if now - self.last_reopen <= 1.0:
+            return
+        self.last_reopen = now
+        self.close()
+        try:
+            self.fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            self.fd = None
+
+    def close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+def forward_ext_mouse(ext, mouse, cfg):
+    """Read a USB mouse (ExtMouse) and drive the 1351 gadget (MouseForwarder),
+    gated by the master mouse switch. Returns False if the device errored
+    (unplugged) so the caller can drop it, True otherwise."""
+    try:
+        dx, dy, buttons = ext.read()
+    except BlockingIOError:
+        return True
+    except OSError as ex:
+        print("ext mouse lost:", ex, file=sys.stderr)
+        return False
+    if not cfg.get("touchpad_mouse", True):
+        mouse.off()
+        return True
+    sens = float(cfg.get("ext_mouse_sensitivity", 1.0))
+    mouse.emit(dx, dy, buttons, sens, sens)
+    return True
+
+
 class Bridge:
     def __init__(self, dev):
         self.dev = dev
@@ -315,27 +447,22 @@ class Bridge:
         self.circle = False
         self.f1_down = False         # options held -> F1 keycode in the keyboard report
         self.ps_held = False         # while the PS button is held, suppress all other input
-        # Two independent HID gadget fds, one per interface. O_NONBLOCK so a write
-        # can never freeze the bridge if the C64 stops draining an endpoint -- a
-        # dropped report is re-sent (keys) or discarded (mouse motion is
-        # fire-and-forget).
+        # The keyboard HID gadget fd. O_NONBLOCK so a write can never freeze the
+        # bridge if the C64 stops draining the endpoint -- a dropped key report is
+        # re-sent next tick. The mouse gadget (hidg1) lives in its own
+        # MouseForwarder, shared by the touchpad and an external USB mouse.
         self.kbd_fd = os.open(HIDG_KBD, os.O_WRONLY | os.O_NONBLOCK)
-        self.mouse_fd = None
         self.last_kbd_report = None
         self.last_kbd_reopen = 0.0
-        self.last_mouse_reopen = 0.0
+        self.mouse = MouseForwarder()
         self.wasd_on = None          # tri-state until first set_wasd()
         self.last_active = 0.0
         self.status_cache = None
         self.last_status_ts = 0.0
         self.sel = None
         self.tp = None
-        self.ext_mouse = None        # external USB mouse on the Pi, forwarded to hidg1
-        self.ext_buttons = 0         # held button mask from the external mouse
+        self.ext_mouse = None        # external USB mouse on the Pi (ExtMouse), forwarded to hidg1
         self.last_ext_scan = 0.0
-        self.last_buttons = 0
-        self.accum_x = 0.0           # fractional carry, so slow drags are not lost
-        self.accum_y = 0.0
         # REST calls to the U64 (swapper + menu) run on a background worker so a
         # slow/timing-out HTTP request can never stall the event loop -- a stalled
         # loop buffers controller input and replays it in a burst on recovery.
@@ -343,13 +470,6 @@ class Bridge:
         self._rest_q = queue.Queue(maxsize=8)
         self._last_menu_ts = 0.0
         threading.Thread(target=self._rest_worker, daemon=True).start()
-        # Open the mouse endpoint whenever the gadget exposes it (full keyboard+
-        # mouse gadget). Needed for BOTH the controller touchpad and an external
-        # USB mouse on the Pi; a no-op (None) in a keyboard-only gadget.
-        try:
-            self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
-        except OSError as ex:
-            print("mouse gadget open failed:", ex, file=sys.stderr)
         # Bind the touchpad if present; whether its motion is sent is gated live by
         # the touchpad_mouse config (see poll_touchpad), so the mouse switches on
         # and off from the web panel without restarting joyd.
@@ -359,9 +479,10 @@ class Bridge:
             print("Touchpad:", tp_dev.name, tp_dev.path, file=sys.stderr)
         # An external USB mouse, if already plugged in, is preferred over the
         # touchpad. Hotplug (plug/unplug while running) is handled in tick().
-        self.ext_mouse = find_mouse()
-        if self.ext_mouse is not None:
-            print("External mouse:", self.ext_mouse.name, self.ext_mouse.path, file=sys.stderr)
+        dev_mouse = find_mouse()
+        if dev_mouse is not None:
+            self.ext_mouse = ExtMouse(dev_mouse)
+            print("External mouse:", dev_mouse.name, dev_mouse.path, file=sys.stderr)
 
     # --- config ---
     def _mtime(self):
@@ -384,7 +505,7 @@ class Bridge:
             # held button now so it can't stick, regardless of which source moves next.
             if old_mouse != (self.cfg.get("touchpad_mouse"),
                              self.cfg.get("ext_mouse_with_touchpad")):
-                self.mouse_off()
+                self.mouse.off()
             self.write_status(force=True)
 
     # --- input state ---
@@ -435,63 +556,41 @@ class Bridge:
         self._write_kbd(bytes(8))
 
     def _write_kbd(self, report):
+        """Send an 8-byte boot-keyboard report, deduped. O_NONBLOCK: if the C64
+        isn't draining the endpoint, drop it -- the next changed report re-sends."""
         if report == self.last_kbd_report:
             return
-        if self._emit("kbd", report):
-            self.last_kbd_report = report
-
-    def _emit(self, which, report):
-        """Write one report to the keyboard ('kbd') or mouse fd. Returns True if
-        it went out. The fds are O_NONBLOCK: if the C64 isn't draining that
-        endpoint, drop the report (return False) instead of freezing the bridge.
-        Callers decide whether to retry (keyboard re-sends next tick; mouse
-        motion is dropped)."""
-        fd = self.kbd_fd if which == "kbd" else self.mouse_fd
-        if fd is None:
-            return False
+        if self.kbd_fd is None:
+            return
         try:
-            os.write(fd, report)
-            return True
+            os.write(self.kbd_fd, report)
+            self.last_kbd_report = report
         except BlockingIOError:
-            return False
+            pass
         except OSError as ex:
-            self._on_hid_error(which, ex)
-            return False
+            self._on_kbd_error(ex)
 
-    def _on_hid_error(self, which, ex):
+    def _on_kbd_error(self, ex):
         # The C64 USB host is absent (off / not enumerated): gadget writes fail
-        # with ESHUTDOWN/ENODEV. Don't propagate -- that would tear the bridge
-        # down into a tight reconnect loop and starve the status heartbeat.
-        # Force a key re-send once the host returns, and reopen the affected fd
-        # at most once a second so a stale endpoint cannot keep us wedged.
+        # with ESHUTDOWN/ENODEV/EIO. Don't propagate -- that would tear the bridge
+        # down into a tight reconnect loop and starve the status heartbeat. Force
+        # a key re-send once the host returns, and reopen the fd at most once a
+        # second so a stale endpoint cannot keep us wedged.
         if ex.errno not in HID_HOST_ABSENT:
             raise
+        self.last_kbd_report = None
         now = time.monotonic()
-        if which == "kbd":
-            self.last_kbd_report = None
-            if now - self.last_kbd_reopen <= 1.0:
-                return
-            self.last_kbd_reopen = now
-            try:
-                os.close(self.kbd_fd)
-            except OSError:
-                pass
-            try:
-                self.kbd_fd = os.open(HIDG_KBD, os.O_WRONLY | os.O_NONBLOCK)
-            except OSError:
-                self.kbd_fd = None
-        else:
-            if now - self.last_mouse_reopen <= 1.0:
-                return
-            self.last_mouse_reopen = now
-            try:
-                os.close(self.mouse_fd)
-            except OSError:
-                pass
-            try:
-                self.mouse_fd = os.open(HIDG_MOUSE, os.O_WRONLY | os.O_NONBLOCK)
-            except OSError:
-                self.mouse_fd = None
+        if now - self.last_kbd_reopen <= 1.0:
+            return
+        self.last_kbd_reopen = now
+        try:
+            os.close(self.kbd_fd)
+        except OSError:
+            pass
+        try:
+            self.kbd_fd = os.open(HIDG_KBD, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:
+            self.kbd_fd = None
 
     # --- touchpad / external mouse -> 1351 mouse ---
     def mouse_enabled(self):
@@ -521,7 +620,7 @@ class Bridge:
         # never jumps the cursor); release a held button only when the mouse is
         # fully off -- a USB mouse owning the 1351 manages its own buttons.
         if not self.mouse_enabled():
-            self.mouse_off()
+            self.mouse.off()
             return
         if not self.touch_active():
             return
@@ -534,7 +633,7 @@ class Bridge:
         if self.cfg.get("mouse_invert_y", False):
             dy = -dy
         legacy = float(self.cfg.get("mouse_sensitivity", 1.0))
-        self.emit_mouse(dx, dy, buttons,
+        self.mouse.emit(dx, dy, buttons,
                         float(self.cfg.get("mouse_sensitivity_x", legacy)),
                         float(self.cfg.get("mouse_sensitivity_y", legacy)))
 
@@ -542,59 +641,8 @@ class Bridge:
         """Forward an external USB mouse (relative motion + 3 buttons) to hidg1."""
         if self.ext_mouse is None:
             return
-        dx = dy = 0
-        try:
-            for e in self.ext_mouse.read():
-                if e.type == E.EV_REL:
-                    if e.code == E.REL_X:
-                        dx += e.value
-                    elif e.code == E.REL_Y:
-                        dy += e.value
-                elif e.type == E.EV_KEY:
-                    bit = {E.BTN_LEFT: 0x01, E.BTN_RIGHT: 0x02,
-                           E.BTN_MIDDLE: 0x04}.get(e.code)
-                    if bit is not None:
-                        if e.value:
-                            self.ext_buttons |= bit
-                        else:
-                            self.ext_buttons &= ~bit
-        except BlockingIOError:
-            return
-        except OSError as ex:
-            print("ext mouse lost:", ex, file=sys.stderr)
+        if not forward_ext_mouse(self.ext_mouse, self.mouse, self.cfg):
             self.drop_ext_mouse()
-            return
-        if not self.mouse_enabled():
-            self.mouse_off()
-            return
-        sens = float(self.cfg.get("ext_mouse_sensitivity", 1.0))
-        self.emit_mouse(dx, dy, self.ext_buttons, sens, sens)
-
-    def mouse_off(self):
-        """Mouse switched off / source handover: drop any carried motion and
-        release a held button once, so the C64 never sees a stuck 1351 button."""
-        self.accum_x = self.accum_y = 0.0
-        if self.last_buttons and self._emit("mouse", bytes(3)):
-            self.last_buttons = 0
-
-    def emit_mouse(self, dx, dy, buttons, sx, sy):
-        self.accum_x += dx * sx
-        self.accum_y += dy * sy
-        mx = max(-127, min(127, int(self.accum_x)))
-        my = max(-127, min(127, int(self.accum_y)))
-        # Relative deltas must not be deduped (two identical moves are two moves),
-        # but skip empty reports: nothing moved and no button changed.
-        if mx == 0 and my == 0 and buttons == self.last_buttons:
-            return
-        # 3-byte mouse payload: buttons, relative dx, relative dy (no report ID).
-        # Commit the accumulator and button state only after the report actually
-        # went out, so a dropped (host-not-reading) report retries on the next
-        # touchpad event instead of losing motion.
-        report = bytes([buttons, mx & 0xFF, my & 0xFF])
-        if self._emit("mouse", report):
-            self.accum_x -= mx
-            self.accum_y -= my
-            self.last_buttons = buttons
 
     def drop_touchpad(self):
         if self.sel is not None and self.tp is not None:
@@ -609,17 +657,16 @@ class Bridge:
         1351 back to the touchpad cleanly (release any held button / motion)."""
         if self.sel is not None and self.ext_mouse is not None:
             try:
-                self.sel.unregister(self.ext_mouse.fileno())
+                self.sel.unregister(self.ext_mouse.dev.fileno())
             except (KeyError, ValueError, OSError):
                 pass
         if self.ext_mouse is not None:
             try:
-                self.ext_mouse.close()
+                self.ext_mouse.dev.close()
             except OSError:
                 pass
         self.ext_mouse = None
-        self.ext_buttons = 0
-        self.mouse_off()
+        self.mouse.off()
 
     def refresh_ext_mouse(self, now):
         """Detect an external USB mouse appearing at runtime (hotplug). Scans at
@@ -642,9 +689,8 @@ class Bridge:
             except OSError:
                 pass
             return
-        self.ext_mouse = dev
-        self.ext_buttons = 0
-        self.mouse_off()   # clean handover from the touchpad
+        self.ext_mouse = ExtMouse(dev)
+        self.mouse.off()   # clean handover from the touchpad
         print("External mouse:", dev.name, dev.path, file=sys.stderr)
 
     def set_color(self, rgb):
@@ -816,7 +862,7 @@ class Bridge:
                 sel.register(self.tp.dev.fileno(), selectors.EVENT_READ, "touch")
             if self.ext_mouse is not None:
                 try:
-                    sel.register(self.ext_mouse.fileno(), selectors.EVENT_READ, "extmouse")
+                    sel.register(self.ext_mouse.dev.fileno(), selectors.EVENT_READ, "extmouse")
                 except (KeyError, ValueError, OSError) as ex:
                     print("ext mouse register failed:", ex, file=sys.stderr)
                     self.ext_mouse = None
@@ -845,15 +891,15 @@ class Bridge:
             self.wasd_on = False
             if self.ext_mouse is not None:
                 try:
-                    self.ext_mouse.close()
+                    self.ext_mouse.dev.close()
                 except OSError:
                     pass
-            for fd in (self.kbd_fd, self.mouse_fd):
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
+            self.mouse.close()
+            if self.kbd_fd is not None:
+                try:
+                    os.close(self.kbd_fd)
+                except OSError:
+                    pass
 
     def handle(self, e, now):
         if e.type == E.EV_KEY and e.code == E.BTN_MODE:  # PS -> menu toggle on release
@@ -917,12 +963,13 @@ class Bridge:
         self.write_status()
 
 
-def write_waiting_status():
-    """Status while no controller is connected, so the web UI stays informed."""
+def write_waiting_status(ext_mouse=False):
+    """Status while no controller is connected, so the web UI stays informed. A
+    USB mouse may still be active on its own, so ext_mouse reflects its presence."""
     cfg = load_config()
     st = {"controller": None, "wasd_on": False,
           "mode": cfg["mode"], "port": int(cfg["port"]),
-          "battery": None, "charging": None, "ext_mouse": False,
+          "battery": None, "charging": None, "ext_mouse": bool(ext_mouse),
           "ts": time.time()}
     try:
         os.makedirs(os.path.dirname(STATUS), exist_ok=True)
@@ -934,23 +981,71 @@ def write_waiting_status():
         pass
 
 
+def wait_for_controller(poll=1.0):
+    """Block until a game controller appears, returning its evdev device.
+
+    While waiting, a USB mouse plugged into the Pi is still forwarded to the 1351
+    gadget, so the mouse keeps working on its own -- a controller is not required
+    for it. The two are independent: either, both, or neither can be present.
+    find_controller, the mouse hotplug scan and the heartbeat status are throttled
+    to `poll` seconds; mouse motion itself is forwarded as soon as it arrives."""
+    mouse = MouseForwarder()
+    ext = None
+    sel = selectors.DefaultSelector()
+    cfg = load_config()
+    last_check = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if (now - last_check) >= poll:
+                last_check = now
+                cfg = load_config()
+                dev = find_controller()
+                if dev is not None:
+                    return dev
+                if ext is None:
+                    dev_mouse = find_mouse()
+                    if dev_mouse is not None:
+                        ext = ExtMouse(dev_mouse)
+                        sel.register(dev_mouse.fileno(), selectors.EVENT_READ, "mouse")
+                        mouse.off()
+                        print("External mouse:", dev_mouse.name, dev_mouse.path, file=sys.stderr)
+                write_waiting_status(ext_mouse=ext is not None)
+            if ext is None:
+                time.sleep(poll)   # nothing to forward; just pace the controller poll
+                continue
+            if sel.select(timeout=poll) and not forward_ext_mouse(ext, mouse, cfg):
+                try:
+                    sel.unregister(ext.dev.fileno())
+                except (KeyError, ValueError, OSError):
+                    pass
+                try:
+                    ext.dev.close()
+                except OSError:
+                    pass
+                ext = None
+                mouse.off()
+    finally:
+        if ext is not None:
+            try:
+                ext.dev.close()
+            except OSError:
+                pass
+        mouse.close()
+        sel.close()
+
+
 def main():
     while True:
-        dev = find_controller()
-        if dev is None:
-            write_waiting_status()
-            time.sleep(1.0)
-            continue
+        dev = wait_for_controller()
         print("Using:", dev.name, dev.path, file=sys.stderr)
         try:
             Bridge(dev).run()
         except OSError as ex:
             print("controller lost:", ex, file=sys.stderr)
-            write_waiting_status()
         except Exception as ex:
             print("bridge error:", ex, file=sys.stderr)
-            write_waiting_status()
-        time.sleep(1.0)
+        time.sleep(1.0)   # guard against a tight respawn if a present controller keeps failing
 
 
 if __name__ == "__main__":
