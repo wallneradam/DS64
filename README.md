@@ -305,6 +305,12 @@ hardening in the first place, prefix the install command with `DS64_NO_HARDEN=1`
 - **Still no input after re-plugging?** Suspect the **USB cable**. A charge-only
   cable carries no data — use a proper **data cable**. A damaged or overly long
   cable can fail the same way; try a shorter, known-good one.
+- **A held direction "moves a bit then stops", or input is erratic?** Check for
+  **another USB input device plugged into the Commodore Ultimate** — a wireless
+  mouse or keyboard receiver (e.g. an old Logitech dongle) shows up as a second USB
+  keyboard, and its reports collide with the bridge's, intermittently releasing the
+  held key. Unplug any such dongle; the DS64 should be the only keyboard-like USB
+  device on the Ultimate.
 
 ## Limitations
 
