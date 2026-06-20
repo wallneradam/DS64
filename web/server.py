@@ -256,6 +256,66 @@ def pair_controller():
 
 
 # ---------------------------------------------------------------------------
+# Update check -- is the deployed code behind its git remote?
+#
+# The appliance is a git checkout (/opt/ds64) updated with `ds64-update`
+# (git reset --hard origin/<branch>). We surface a Pi-hole-style "update
+# available" hint in the web footer by comparing the local HEAD with the remote
+# tip of the tracked branch. `git ls-remote` reads only the ref advertisement --
+# no objects fetched, no local repo writes -- so the check is cheap and
+# side-effect-free. It runs on a slow shared timer, only while a client is
+# connected (like every other probe here), so an idle appliance stays quiet.
+# ---------------------------------------------------------------------------
+
+REPO_DIR = os.path.dirname(HERE)
+UPDATE_BRANCH = os.environ.get("DS64_UPDATE_BRANCH", "").strip()  # "" = whatever HEAD tracks
+UPDATE_INTERVAL = 3600.0   # seconds between remote checks (the first runs on connect)
+LAST_UPDATE_CHECK = -1e9   # loop.time() of the last ls-remote; survives watcher restarts
+
+
+def _git(*args, timeout=15):
+    """git in the deploy dir, never blocking on a credential prompt, and immune to
+    the 'dubious ownership' refusal (root vs the bind-mounted repo's owner)."""
+    return subprocess.run(
+        ["git", "-C", REPO_DIR, "-c", "safe.directory=" + REPO_DIR, *args],
+        capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _git_out(*args, timeout=15):
+    """stdout of a git command, stripped, or '' on any failure (non-git dir,
+    missing git, timeout, network error)."""
+    try:
+        r = _git(*args, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def update_status():
+    """Whether the deployed checkout is behind its remote: {available, branch,
+    local, remote}. `available` is True when the remote tip differs from HEAD
+    (the production Pi resets HEAD hard to the remote, so 'differs' == 'behind').
+    Returns {"available": False} for a non-git deploy or an unreachable remote."""
+    local = _git_out("rev-parse", "HEAD", timeout=5)
+    if not local:
+        return {"available": False}
+    branch = UPDATE_BRANCH or _git_out("rev-parse", "--abbrev-ref", "HEAD", timeout=5)
+    if not branch or branch == "HEAD":
+        branch = "main"
+    remote = ""
+    for line in _git_out("ls-remote", "origin", branch, timeout=20).splitlines():
+        sha, _, ref = line.partition("\t")
+        if ref.strip() == "refs/heads/" + branch:
+            remote = sha.strip()
+            break
+    if not remote:
+        return {"available": False, "branch": branch, "local": local[:7]}
+    return {"available": remote != local, "branch": branch,
+            "local": local[:7], "remote": remote[:7]}
+
+
+# ---------------------------------------------------------------------------
 # SSE event stream + shared state watcher
 #
 # The browser opens ONE long-lived /api/events stream instead of polling. A
@@ -333,6 +393,7 @@ async def watcher_loop():
     controller changes (or a command forces it); the U64 is probed on its own slow
     Wi-Fi timer. Everything is pushed through broadcast_if_changed, so steady state
     sends nothing."""
+    global LAST_UPDATE_CHECK
     print("watcher: started -- probing while a client is connected", file=sys.stderr)
     loop = asyncio.get_running_loop()
     last_u64 = 0.0
@@ -357,6 +418,10 @@ async def watcher_loop():
             if loop.time() - last_u64 >= U64_INTERVAL:
                 last_u64 = loop.time()
                 broadcast_if_changed("u64", await off(u64_status))
+
+            if loop.time() - LAST_UPDATE_CHECK >= UPDATE_INTERVAL:
+                LAST_UPDATE_CHECK = loop.time()
+                broadcast_if_changed("update", await off(update_status))
 
             try:
                 await asyncio.wait_for(NOTIFY.wait(), timeout=STATUS_POLL)
@@ -401,7 +466,7 @@ async def sse_handler(request):
     CLIENTS.add(q)
     ensure_watcher()
     try:
-        for channel in ("status", "controller", "u64"):
+        for channel in ("status", "controller", "u64", "update"):
             entry = LAST.get(channel)
             if entry is not None:
                 await resp.write(sse_frame(channel, entry[1]))
@@ -448,6 +513,10 @@ async def get_controller(request):
 
 async def get_u64(request):
     return web.json_response(await off(u64_status))
+
+
+async def get_update(request):
+    return web.json_response(await off(update_status))
 
 
 async def _json_body(request):
@@ -570,6 +639,7 @@ def main():
         web.get("/api/status", get_status),
         web.get("/api/controller", get_controller),
         web.get("/api/u64", get_u64),
+        web.get("/api/update", get_update),
         web.get("/api/events", sse_handler),
         web.post("/api/config", post_config),
         web.post("/api/pair", post_pair),
