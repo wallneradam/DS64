@@ -199,6 +199,10 @@ class Touchpad:
 
     def __init__(self, dev):
         self.dev = dev
+        self._resyncing = False
+        self._reset_state()
+
+    def _reset_state(self):
         self.slot = 0
         self.tid = {}     # slot -> tracking id, present only while the finger is down
         self.pos = {}     # slot -> [x, y] latest absolute position
@@ -209,6 +213,22 @@ class Touchpad:
         """Drain pending events; return (dx, dy, left, right) for this batch."""
         dx = dy = 0
         for e in self.dev.read():
+            if e.type == E.EV_SYN and e.code == E.SYN_DROPPED:
+                # The kernel's evdev buffer overflowed and silently discarded
+                # events. Our per-slot finger bookkeeping is now unreliable: a lost
+                # lift (ABS_MT_TRACKING_ID == -1) leaves a phantom contact, and as
+                # the kernel reuses slots the finger count drifts -- a one-finger
+                # touch reads as two (right button) while a two-finger touch can
+                # read as one (left), i.e. the buttons appear swapped. Ignore the
+                # post-drop burst up to the next SYN_REPORT, then start clean; the
+                # next real touch rebuilds correct state.
+                self._resyncing = True
+                continue
+            if self._resyncing:
+                if e.type == E.EV_SYN and e.code == E.SYN_REPORT:
+                    self._resyncing = False
+                    self._reset_state()
+                continue
             if e.type == E.EV_ABS:
                 if e.code == E.ABS_MT_SLOT:
                     self.slot = e.value
