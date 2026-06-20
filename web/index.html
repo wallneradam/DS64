@@ -72,9 +72,12 @@
   .foot { text-align:center; color:var(--fg); font-size:.78rem; margin:28px 0 0; line-height:1.7; }
   .foot a { color:var(--hi); text-decoration:none; }
   .foot a:hover { text-decoration:underline; }
-  .upd { display:inline-block; margin:0 0 14px; padding:6px 16px; border-radius:20px;
+  .upd { display:block; width:fit-content; max-width:100%; margin:0 auto 14px;
+         padding:8px 16px; border-radius:14px;
          border:2px solid var(--hi); color:var(--hi); font-weight:bold; font-size:.76rem;
-         letter-spacing:.5px; box-shadow:0 0 12px rgba(176,164,255,.25); }
+         letter-spacing:.3px; line-height:1.7; box-shadow:0 0 12px rgba(176,164,255,.25); }
+  .upd code { background:rgba(176,164,255,.16); border:1px solid var(--hi); border-radius:4px;
+              padding:1px 6px; font:inherit; white-space:nowrap; }
   .upd a { color:var(--hi); text-decoration:underline; }
   pre { white-space:pre-wrap; color:var(--fg); font-size:.78rem; margin:10px 0 0; }
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
@@ -261,8 +264,8 @@
 
   <footer class="foot">
     <div id="updnote" class="upd" style="display:none"></div>
-    <a href="https://github.com/wallneradam/DS64" target="_blank" rel="noopener">github.com/wallneradam/DS64</a><br>
-    &copy; 2026 Adam Wallner &middot; <a href="https://github.com/wallneradam/DS64/blob/main/LICENSE" target="_blank" rel="noopener">GPL v3</a>
+    &copy; 2026 Adam Wallner &middot; <a href="https://github.com/wallneradam/DS64/blob/main/LICENSE" target="_blank" rel="noopener">GPL v3</a><br>
+    <a href="https://github.com/wallneradam/DS64" target="_blank" rel="noopener">github.com/wallneradam/DS64</a>
   </footer>
 </div>
 
@@ -535,15 +538,16 @@ $('#u64host').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.
 // Pi-hole-style "update available" hint: the server compares the deployed git
 // HEAD with the remote tip of the tracked branch and pushes the verdict here.
 function renderUpdate(j) {
+  // The pill only appears when the deploy is behind its remote; it carries the
+  // update instruction plus a "what's new" link to the exact new commits.
   const el = $('#updnote');
-  if (!j || !j.available) { el.style.display = 'none'; el.innerHTML = ''; el.removeAttribute('title'); return; }
+  if (!j || !j.available) { el.style.display = 'none'; el.innerHTML = ''; return; }
   const branch = j.branch || 'main';
   const link = (j.local && j.remote)
     ? 'https://github.com/wallneradam/DS64/compare/' + j.local + '...' + j.remote
     : 'https://github.com/wallneradam/DS64/commits/' + branch;
-  el.innerHTML = '&uarr; update available &middot; '
-    + '<a href="' + link + '" target="_blank" rel="noopener">what&rsquo;s new</a>';
-  el.title = j.remote ? (j.local + ' → ' + j.remote + ' (' + branch + ')') : branch;
+  el.innerHTML = '&uarr; update available<br>run <code>sudo ds64-update</code> over SSH or rPi&nbsp;Connect<br>'
+    + '<a href="' + link + '" target="_blank" rel="noopener">&rarr; what&rsquo;s new</a>';
   el.style.display = '';
 }
 

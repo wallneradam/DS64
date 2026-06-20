@@ -419,7 +419,11 @@ async def watcher_loop():
                 last_u64 = loop.time()
                 broadcast_if_changed("u64", await off(u64_status))
 
-            if loop.time() - LAST_UPDATE_CHECK >= UPDATE_INTERVAL:
+            # Re-check on the hourly timer, but ALWAYS run once when there is no
+            # cached result yet -- otherwise a brief earlier client could have set
+            # the throttle timestamp while its cached payload was later dropped,
+            # leaving a fresh client with no "update" frame for up to an hour.
+            if "update" not in LAST or loop.time() - LAST_UPDATE_CHECK >= UPDATE_INTERVAL:
                 LAST_UPDATE_CHECK = loop.time()
                 broadcast_if_changed("update", await off(update_status))
 
@@ -430,7 +434,11 @@ async def watcher_loop():
     except asyncio.CancelledError:
         pass
     finally:
-        LAST.clear()
+        # Keep the "update" result cached across watcher restarts so a reconnecting
+        # client gets the pill replayed immediately (the throttle would otherwise
+        # skip a fresh check). The fast-changing channels are dropped and re-probed.
+        for ch in ("status", "controller", "u64"):
+            LAST.pop(ch, None)
         print("watcher: stopped -- no clients, radio quiet", file=sys.stderr)
 
 
