@@ -278,12 +278,14 @@ function paintSeg(id, val) {
     b.classList.toggle('on', b.dataset.v == String(val)));
 }
 
-// USB mouse present -> show its section and hide the touchpad's, unless the user
-// asked for both at once. Driven by status (presence) + config (the toggle).
+// Master mouse off -> hide both source cards. Otherwise a USB mouse present shows
+// its card and hides the touchpad's, unless the user asked for both at once.
+// Driven by status (presence) + config (master enable + the simultaneous toggle).
 function updateMouseVis() {
+  const enabled = !!(cfg && cfg.touchpad_mouse);
   const simul = !!(cfg && cfg.ext_mouse_with_touchpad);
-  $('#usbmouse').style.display = extMousePresent ? '' : 'none';
-  $('#touchmouse').style.display = (!extMousePresent || simul) ? '' : 'none';
+  $('#usbmouse').style.display = (enabled && extMousePresent) ? '' : 'none';
+  $('#touchmouse').style.display = (enabled && (!extMousePresent || simul)) ? '' : 'none';
 }
 
 function paintConfig(c) {
