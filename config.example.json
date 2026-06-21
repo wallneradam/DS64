@@ -16,5 +16,7 @@
   "mouse_invert_x": false,
   "mouse_invert_y": false,
   "ext_mouse_sensitivity": 1.0,
-  "ext_mouse_with_touchpad": false
+  "ext_mouse_with_touchpad": false,
+  "ntp_enabled": false,
+  "ntp_offset_minutes": 0
 }

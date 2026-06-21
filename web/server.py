@@ -51,6 +51,8 @@ DEFAULTS = {
     "mouse_invert_y": False,
     "ext_mouse_sensitivity": 1.0,
     "ext_mouse_with_touchpad": False,
+    "ntp_enabled": False,
+    "ntp_offset_minutes": 0,
 }
 
 
@@ -199,6 +201,13 @@ def _local_ipv4s():
         if m and not m.group(1).startswith("127."):
             res.append((m.group(1), int(m.group(2))))
     return res
+
+
+def primary_ip():
+    """The Pi's first non-loopback IPv4, for the UI to show as the NTP server
+    address the user types into the C64 (mDNS is absent, so a numeric IP is safest)."""
+    ips = _local_ipv4s()
+    return ips[0][0] if ips else ""
 
 
 def _scan_hosts(max_hosts=510):
@@ -527,6 +536,13 @@ async def get_update(request):
     return web.json_response(await off(update_status))
 
 
+async def get_netinfo(request):
+    """The Pi's IP (for the NTP card to show) plus its current UTC, so the UI can
+    display the Pi's own clock -- the base the NTP server serves from -- as a
+    health check."""
+    return web.json_response({"ip": await off(primary_ip), "utc": time.time()})
+
+
 async def _json_body(request):
     raw = await request.read()
     return json.loads(raw or b"{}")
@@ -548,12 +564,14 @@ async def post_config(request):
         cfg["u64_host"] = str(data["u64_host"]).strip()
     for flag in ("ps_menu", "circle_left", "options_f1", "share_swap", "touchpad_mouse",
                  "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y",
-                 "ext_mouse_with_touchpad"):
+                 "ext_mouse_with_touchpad", "ntp_enabled"):
         if flag in data:
             cfg[flag] = bool(data[flag])
     for axis in ("mouse_sensitivity_x", "mouse_sensitivity_y", "ext_mouse_sensitivity"):
         if axis in data:
             cfg[axis] = max(0.02, min(3.0, float(data[axis])))
+    if "ntp_offset_minutes" in data:
+        cfg["ntp_offset_minutes"] = max(-1440, min(1440, int(round(float(data["ntp_offset_minutes"])))))
     # The U64 hardwires a USB mouse to control port 1, so the 1351 mouse and
     # a port-1 joystick can't share it. Keep them mutually exclusive,
     # favouring whichever the user just changed: enabling the mouse frees
@@ -648,6 +666,7 @@ def main():
         web.get("/api/controller", get_controller),
         web.get("/api/u64", get_u64),
         web.get("/api/update", get_update),
+        web.get("/api/netinfo", get_netinfo),
         web.get("/api/events", sse_handler),
         web.post("/api/config", post_config),
         web.post("/api/pair", post_pair),

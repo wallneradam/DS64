@@ -49,6 +49,8 @@
   #pairresult { font-size:.82rem; }
   .logbtn { margin-top:10px; background:transparent; color:var(--hi); border:2px solid var(--fg);
             border-radius:6px; padding:6px 12px; font:inherit; font-size:.8rem; cursor:pointer; }
+  .stepbtn { background:transparent; color:var(--hi); border:2px solid var(--fg);
+             border-radius:6px; padding:5px 9px; font:inherit; font-size:.8rem; cursor:pointer; }
   .ok { color:var(--ok); } .warn { color:#ffd24d; }
   .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6);
            align-items:center; justify-content:center; padding:18px; z-index:10; }
@@ -262,6 +264,27 @@
     <div class="muted" style="margin-top:8px">The DS4/DS5 touchpad drives the GEOS cursor as a 1351 on port 1. Lower = slower; the pad is short vertically, so Y is usually a touch faster than X.</div>
   </div>
 
+  <div class="card">
+    <h2>CLOCK (NTP)</h2>
+    <div class="row">
+      <span class="muted">serve time to the C64</span>
+      <span class="seg" id="ntp_enabled">
+        <button data-v="1">ON</button><button data-v="0">OFF</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="muted">offset</span>
+      <span class="tctl">
+        <button class="stepbtn ntpstep" data-d="-60">&minus;1h</button>
+        <input type="number" id="ntpoff" class="numbox" min="-1440" max="1440" step="1">
+        <span class="unit">min</span>
+        <button class="stepbtn ntpstep" data-d="60">+1h</button>
+      </span>
+    </div>
+    <div class="muted" style="margin-top:8px">NTP server: <span id="ntpip" style="color:var(--hi); font-weight:bold">&hellip;</span> &middot; Pi clock <span id="ntpclock">&mdash;</span></div>
+    <div class="muted" style="margin-top:6px">On the C64 set this Pi as an NTP server, then adjust the offset until the displayed clock is right (+ moves it forward). The firmware time-zone and its DST are unreliable, so pick any zone and correct it here; re-tune by ~1h at daylight-saving changes. The Pi itself must have the correct time.</div>
+  </div>
+
   <footer class="foot">
     <div id="updnote" class="upd" style="display:none"></div>
     &copy; 2026 Adam Wallner &middot; <a href="https://github.com/wallneradam/DS64/blob/main/LICENSE" target="_blank" rel="noopener">GPL v3</a><br>
@@ -309,6 +332,8 @@ function paintConfig(c) {
   paintSeg('mouse_invert_x', c.mouse_invert_x ? 1 : 0);
   paintSeg('mouse_invert_y', c.mouse_invert_y ? 1 : 0);
   paintSeg('ext_mouse_with_touchpad', c.ext_mouse_with_touchpad ? 1 : 0);
+  paintSeg('ntp_enabled', c.ntp_enabled ? 1 : 0);
+  if (document.activeElement !== $('#ntpoff')) $('#ntpoff').value = Number(c.ntp_offset_minutes) || 0;
   const sx = Number(c.mouse_sensitivity_x), sy = Number(c.mouse_sensitivity_y);
   $('#msx').value = Math.min(1, Math.max(0.02, sx)); $('#msxval').value = sx;
   $('#msy').value = Math.min(1, Math.max(0.02, sy)); $('#msyval').value = sy;
@@ -415,6 +440,39 @@ function bindSensitivity(slider, box, key, slMin, slMax) {
 bindSensitivity('#msx', '#msxval', 'mouse_sensitivity_x', 0.02, 1);
 bindSensitivity('#msy', '#msyval', 'mouse_sensitivity_y', 0.02, 1);
 bindSensitivity('#ems', '#emsval', 'ext_mouse_sensitivity', 0.1, 3);
+
+// CLOCK (NTP): enable toggle + a minutes offset (free entry plus -1h/+1h steps)
+// that the server adds to true UTC to cancel the firmware's broken time zone.
+document.querySelectorAll('#ntp_enabled button').forEach(b =>
+  b.onclick = () => save({ntp_enabled: b.dataset.v === '1'}));
+function saveOffset(v) {
+  v = Math.max(-1440, Math.min(1440, Math.round(v)));
+  $('#ntpoff').value = v;
+  save({ntp_offset_minutes: v});
+}
+$('#ntpoff').onchange = e => {
+  const v = Number(e.target.value);
+  if (!isFinite(v)) { paintConfig(cfg); return; }
+  saveOffset(v);
+};
+document.querySelectorAll('.ntpstep').forEach(b =>
+  b.onclick = () => saveOffset((Number($('#ntpoff').value) || 0) + Number(b.dataset.d)));
+
+// Show the Pi's own UTC clock (the base the NTP server serves from) so the user
+// can confirm the Pi is itself time-synced. Fetched once; ticked locally.
+let piSkew = null;
+const p2 = n => String(n).padStart(2, '0');
+function tickPiClock() {
+  if (piSkew === null) return;
+  const d = new Date((Date.now() / 1000 + piSkew) * 1000);
+  $('#ntpclock').textContent = p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes())
+    + ':' + p2(d.getUTCSeconds()) + ' UTC';
+}
+setInterval(tickPiClock, 1000);
+fetch('/api/netinfo').then(r => r.json()).then(j => {
+  $('#ntpip').textContent = j.ip || location.hostname || '(this Pi)';
+  if (typeof j.utc === 'number') { piSkew = j.utc - Date.now() / 1000; tickPiClock(); }
+}).catch(() => { $('#ntpip').textContent = location.hostname || '(this Pi)'; });
 
 let lastLog = '';
 function setResult(html, cls) { const el = $('#pairresult'); el.innerHTML = html; el.className = cls || 'muted'; }

@@ -13,7 +13,7 @@ set -euo pipefail
 
 DEST="${DS64_DEST:-/opt/ds64}"
 BRANCH_OVERRIDE=""   # set by --dev / --main / --branch; empty = DS64_BRANCH env, else main
-UNITS=(ds64-gadget ds64-joyd ds64-web)
+UNITS=(ds64-gadget ds64-joyd ds64-web ds64-ntp)
 # Repo paths whose changes a code restart does NOT apply (need a full reinstall).
 STRUCT_RE='^(setup/systemd/|install\.sh$|setup/ds64-(lock|unlock|persist\.sh)$|setup/ds64-update$)'
 
