@@ -579,6 +579,7 @@ async def post_config(request):
         return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
     cfg = read_config()
     old_offset = cfg.get("ntp_offset_minutes")
+    old_enabled = cfg.get("ntp_enabled")
     if "port" in data and int(data["port"]) in (1, 2):
         cfg["port"] = int(data["port"])
     if data.get("mode") in ("auto", "manual"):
@@ -608,13 +609,14 @@ async def post_config(request):
         else:
             cfg["touchpad_mouse"] = False
     write_config(cfg)
-    # An offset change only reaches the C64 on its next (hourly) SNTP poll. When
-    # our NTP server is on, force an immediate re-read by toggling the Ultimate's
-    # 'SNTP Enable' off->on over REST so the firmware re-runs start_sntp() now.
+    # A changed offset, or newly enabling our server, only reaches the C64 on its
+    # next (hourly) SNTP poll. When our NTP server is on, force an immediate
+    # re-read by toggling the Ultimate's 'SNTP Enable' off->on over REST so the
+    # firmware re-runs start_sntp() now.
+    offset_changed = "ntp_offset_minutes" in data and cfg["ntp_offset_minutes"] != old_offset
+    just_enabled = bool(cfg.get("ntp_enabled")) and not old_enabled
     ntp_resynced = None
-    if ("ntp_offset_minutes" in data
-            and cfg["ntp_offset_minutes"] != old_offset
-            and cfg.get("ntp_enabled")):
+    if cfg.get("ntp_enabled") and (offset_changed or just_enabled):
         ntp_resynced = await off(_u64_force_ntp_resync, cfg.get("u64_host", ""))
     return web.json_response({"ok": True, "config": cfg, "ntp_resynced": ntp_resynced})
 
