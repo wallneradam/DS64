@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -186,6 +187,29 @@ def u64_status():
     ok, info = _u64_probe(host, timeout=1.5)
     return {"host": host, "reachable": ok,
             "product": info.get("product"), "hostname": info.get("hostname")}
+
+
+U64_NTP_EN_PATH = "/v1/configs/Network%20Settings/SNTP%20Enable"  # RAM-only PUT
+
+
+def _u64_force_ntp_resync(host, timeout=2.0):
+    """Make the Ultimate re-read the time NOW by toggling its 'SNTP Enable' off
+    then on over the REST config API: the firmware re-runs start_sntp() only on an
+    actual value change, so a plain re-set is a no-op -- hence the off->on flip.
+    RAM-only (no flash write); best-effort -- an unreachable U64 is logged."""
+    host = (host or "").strip()
+    if not host:
+        return False
+    try:
+        for value in ("Disabled", "Enabled"):
+            url = "http://%s%s?value=%s" % (host, U64_NTP_EN_PATH,
+                                            urllib.parse.quote(value))
+            urllib.request.urlopen(urllib.request.Request(url, method="PUT"),
+                                   timeout=timeout).read()
+        return True
+    except Exception as ex:
+        print("U64 NTP resync failed:", ex, file=sys.stderr)
+        return False
 
 
 def _local_ipv4s():
@@ -554,6 +578,7 @@ async def post_config(request):
     except ValueError:
         return web.json_response({"ok": False, "message": "bad JSON"}, status=400)
     cfg = read_config()
+    old_offset = cfg.get("ntp_offset_minutes")
     if "port" in data and int(data["port"]) in (1, 2):
         cfg["port"] = int(data["port"])
     if data.get("mode") in ("auto", "manual"):
@@ -583,7 +608,15 @@ async def post_config(request):
         else:
             cfg["touchpad_mouse"] = False
     write_config(cfg)
-    return web.json_response({"ok": True, "config": cfg})
+    # An offset change only reaches the C64 on its next (hourly) SNTP poll. When
+    # our NTP server is on, force an immediate re-read by toggling the Ultimate's
+    # 'SNTP Enable' off->on over REST so the firmware re-runs start_sntp() now.
+    ntp_resynced = None
+    if ("ntp_offset_minutes" in data
+            and cfg["ntp_offset_minutes"] != old_offset
+            and cfg.get("ntp_enabled")):
+        ntp_resynced = await off(_u64_force_ntp_resync, cfg.get("u64_host", ""))
+    return web.json_response({"ok": True, "config": cfg, "ntp_resynced": ntp_resynced})
 
 
 async def post_pair(request):
