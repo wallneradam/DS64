@@ -1,20 +1,30 @@
 #!/bin/bash
-# ds64-update -- pull the latest DS64 code and restart, WITHOUT a reboot.
+# ds64-update -- update DS64 in place after the first install.
 #
-# Works while the appliance is locked (read-only root) because ds64-lock relocates
-# /opt/ds64 onto the writable persistent image, so a git-pull there sticks. It
-# updates ONLY the application code (controller bridge, web UI, scripts, USB gadget
-# setup). Changes that need a writable root or a reboot are NOT applied here and
-# are reported instead -- systemd unit files, the installer's config.txt / package
-# logic, and ds64-persist itself. For those, run the full reinstall:
-#     sudo ds64-unlock                                   # disables overlay, reboots
-#     curl -fsSL .../install.sh | sudo bash              # updates + re-hardens
+# After the one-time `curl ... | install.sh`, this is the ONLY command you run to
+# update. It picks one of two paths automatically:
+#
+#   * Fast path -- only application code changed: git-pull on the persistent
+#     /opt/ds64 and restart the services. No reboot; works while the appliance is
+#     locked (read-only root), because ds64-lock relocates /opt/ds64 onto the
+#     writable persistent image, so a pull there sticks.
+#
+#   * Full path -- a systemd unit, the installer, config.txt logic or the
+#     persistence setup changed (or such a change from an earlier pull was never
+#     installed, e.g. a new unit added while locked): hand off to the in-repo
+#     install.sh, which re-applies everything and re-hardens. That needs a
+#     writable root, so if the appliance is locked we stop and tell you to
+#     `sudo ds64-unlock` (reboots) and re-run ds64-update.
+#
+# Branch is preserved end to end: `ds64-update --dev` runs the installer on dev,
+# never silently switching to main.
 set -euo pipefail
 
 DEST="${DS64_DEST:-/opt/ds64}"
 BRANCH_OVERRIDE=""   # set by --dev / --main / --branch; empty = DS64_BRANCH env, else main
-UNITS=(ds64-gadget ds64-joyd ds64-web ds64-ntp)
-# Repo paths whose changes a code restart does NOT apply (need a full reinstall).
+UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web ds64-ntp)
+TOOLS=(ds64-lock ds64-unlock ds64-update)
+# Repo paths whose changes the fast path cannot apply -> need the full installer.
 STRUCT_RE='^(setup/systemd/|install\.sh$|setup/ds64-(lock|unlock|persist\.sh)$|setup/ds64-update$)'
 
 say()  { printf '\n==> %s\n' "$*"; }
@@ -34,6 +44,10 @@ Usage: sudo ds64-update [options]
 With no option, 'main' is updated. --dev switches /opt/ds64 onto the dev branch
 and updates from there; a later plain `ds64-update` switches back to main.
 DS64_BRANCH overrides the default when no option is given.
+
+Code-only changes apply with no reboot. Unit / installer / config changes are
+applied by the in-repo install.sh, which ds64-update runs for you; if the
+appliance is locked it first asks you to `sudo ds64-unlock`.
 EOF
 }
 
@@ -53,23 +67,60 @@ done
 
 # Branch precedence: explicit flag > DS64_BRANCH env > main.
 BRANCH="${BRANCH_OVERRIDE:-${DS64_BRANCH:-main}}"
+# The exact command to re-run after an unlock, carrying the same branch.
+case "$BRANCH" in
+    main) RERUN="sudo ds64-update" ;;
+    dev)  RERUN="sudo ds64-update --dev" ;;
+    *)    RERUN="sudo ds64-update --branch $BRANCH" ;;
+esac
 
-# The reboot-free path needs $DEST to be writable. When the appliance is locked,
-# that is true ONLY if ds64-lock relocated it onto the persistent image (a bind
-# mount). On a locked root that is not the case -> the pull would land on tmpfs
-# and vanish on reboot, so refuse and point at the one-time migration.
+# Locked == read-only overlay root. The full installer cannot run against it.
 overlay_active=0
 [ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = overlay ] && overlay_active=1
 if command -v raspi-config >/dev/null 2>&1 \
    && [ "$(raspi-config nonint get_overlay_now 2>/dev/null)" = "0" ]; then
     overlay_active=1
 fi
+
+# Even the fast path needs $DEST writable. When locked, that holds ONLY if
+# ds64-lock relocated it onto the persistent image (a bind mount). Otherwise a
+# pull lands on tmpfs and vanishes on reboot -> refuse, point at the migration.
 if [ "$overlay_active" -eq 1 ] && ! mountpoint -q "$DEST"; then
     die "Appliance is locked but $DEST is on the read-only root -- an update would
     not persist. Migrate it onto the persistent store once (no reinstall needed):
         sudo ds64-lock
-    then re-run  sudo ds64-update."
+    then re-run  $RERUN."
 fi
+
+# Does the installed system match the repo? A mismatch means a structural change
+# from some earlier pull was never installed (e.g. a unit added while locked), so
+# the full installer is owed even when git reports no new commits.
+install_in_sync() {
+    local f
+    for f in "${UNITS[@]}" ds64-persist; do
+        [ -f "$DEST/setup/systemd/$f.service" ] || continue
+        cmp -s "$DEST/setup/systemd/$f.service" "/etc/systemd/system/$f.service" || return 1
+    done
+    for f in "${TOOLS[@]}"; do
+        cmp -s "$DEST/setup/$f" "/usr/local/sbin/$f" || return 1
+    done
+    return 0
+}
+
+# Restart only the units that are actually installed -- a not-yet-installed unit
+# (the very case the full path handles) must not make this hard-fail.
+restart_installed() {
+    local present=() u
+    for u in "${UNITS[@]}"; do
+        [ -f "/etc/systemd/system/$u.service" ] && present+=("$u")
+    done
+    if [ "${#present[@]}" -gt 0 ]; then
+        systemctl restart "${present[@]}"
+        ok "restarted: ${present[*]}"
+    else
+        warn "no DS64 units installed yet -- a full install is needed"
+    fi
+}
 
 say "Source: $DEST ($BRANCH)"
 git -C "$DEST" remote get-url origin >/dev/null 2>&1 \
@@ -79,34 +130,58 @@ before=$(git -C "$DEST" rev-parse HEAD)
 git -C "$DEST" fetch -q --depth=1 origin "$BRANCH" \
     || die "cannot fetch branch '$BRANCH' from origin -- does it exist?"
 after=$(git -C "$DEST" rev-parse "origin/$BRANCH")
-if [ "$before" = "$after" ] && [ "$cur_branch" = "$BRANCH" ]; then
-    ok "already up to date (${after:0:7}) on $BRANCH"
+
+# Apply the code when there are new commits or we're switching branch. Capture
+# `changed` BEFORE the switch, while both trees are present.
+changed=""
+if [ "$before" != "$after" ] || [ "$cur_branch" != "$BRANCH" ]; then
+    changed=$(git -C "$DEST" diff --name-only "$before" "$after")
+    git -C "$DEST" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
+    git -C "$DEST" clean -qfd
+    if [ "$cur_branch" = "$BRANCH" ]; then
+        chg "updated ${before:0:7} -> ${after:0:7}"
+    else
+        chg "switched $cur_branch -> $BRANCH (${after:0:7})"
+    fi
+else
+    ok "code already at ${after:0:7} on $BRANCH"
+fi
+
+# Decide whether the full installer is needed: structural files in this update,
+# or an installed system that no longer matches the repo.
+need_full=0
+if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -qE "$STRUCT_RE"; then
+    need_full=1
+    say "Structural changes in this update (need the full installer):"
+    printf '%s\n' "$changed" | grep -E "$STRUCT_RE" | sed 's/^/        /'
+fi
+if ! install_in_sync; then
+    if [ "$need_full" -eq 0 ]; then
+        say "Installed units/tools are out of date vs the repo -- full install owed"
+    fi
+    need_full=1
+fi
+
+if [ "$need_full" -eq 1 ]; then
+    if [ "$overlay_active" -eq 1 ]; then
+        say "Full install required, but the appliance is locked"
+        warn "Structural changes need a writable root. Unlock, then re-run update:"
+        warn "    sudo ds64-unlock     # disables the overlay, then reboots"
+        warn "    $RERUN"
+        warn "(re-run it after the reboot -- it will run the installer for you)"
+        warn "The latest code is already on $DEST; nothing structural changed yet."
+        exit 0
+    fi
+    say "Running the full installer ($BRANCH) -- it re-applies units + re-hardens"
+    [ -f "$DEST/install.sh" ] || die "$DEST/install.sh missing -- cannot run the full install"
+    exec env DS64_BRANCH="$BRANCH" bash "$DEST/install.sh"
+fi
+
+# Fast path: nothing structural -> restart the services with the new code.
+if [ -z "$changed" ]; then
+    ok "already up to date (${after:0:7}) on $BRANCH -- nothing to restart"
     exit 0
 fi
-
-# What changed? Capture BEFORE the switch, while both trees are still present.
-changed=$(git -C "$DEST" diff --name-only "$before" "$after")
-git -C "$DEST" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
-git -C "$DEST" clean -qfd
-if [ "$cur_branch" = "$BRANCH" ]; then
-    chg "updated ${before:0:7} -> ${after:0:7}"
-else
-    chg "switched $cur_branch -> $BRANCH (${after:0:7})"
-fi
-
 say "Restarting services"
-systemctl restart "${UNITS[@]}"
-ok "restarted: ${UNITS[*]}"
-
-# Flag changes a code restart cannot apply, so the user knows a full reinstall is
-# still owed for them (the code itself is now current either way).
-struct=$(printf '%s\n' "$changed" | grep -E "$STRUCT_RE" || true)
-if [ -n "$struct" ]; then
-    say "Heads-up"
-    warn "these files changed but a code restart does NOT apply them:"
-    printf '%s\n' "$struct" | sed 's/^/        /'
-    warn "to apply unit / installer / persist changes, run the full reinstall:"
-    warn "    sudo ds64-unlock   then   curl -fsSL .../install.sh | sudo bash"
-else
-    say "Done -- running ${after:0:7}, no reboot needed."
-fi
+restart_installed
+say "Done -- running ${after:0:7}, no reboot needed."

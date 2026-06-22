@@ -51,9 +51,9 @@ if command -v raspi-config >/dev/null 2>&1 \
 fi
 if [ "$overlay_active" -eq 1 ]; then
     die "This Pi is hardened (read-only) -- an update would not stick.
-    Unlock first, then re-run this installer (it updates AND re-hardens):
+    Unlock first, then update with ds64-update (it runs this installer for you):
         sudo ds64-unlock      # disables the overlay, then reboots
-    After it reboots, run the  curl ... | sudo bash  line again."
+    After it reboots:  sudo ds64-update   (add --dev for the dev branch)"
 fi
 
 # --- 1. packages ---------------------------------------------------------------
@@ -260,16 +260,16 @@ printf '    Pair a pad    open the Web UI, or run:\n'
 printf '                  bash %s/scripts/pair-ds4.sh\n\n' "$DEST"
 if [ "$HARDEN" -eq 1 ]; then
     printf '    Appliance     read-only mode is ON -- power-loss proof\n\n'
-    printf '    Update code   sudo ds64-update   # git-pull + restart, no reboot\n'
-    printf '    Full update   for unit / config / package changes:\n'
-    printf '                  sudo ds64-unlock  (reboots), then re-run this\n'
-    printf '                  installer -- it updates and re-hardens for you\n'
+    printf '    Update        sudo ds64-update   # the only command you need\n'
+    printf '                  code-only changes apply with no reboot; unit /\n'
+    printf '                  installer / config changes run this installer for\n'
+    printf '                  you (it asks you to ds64-unlock first if locked)\n'
 else
     printf '    Harden        make it power-loss proof (recommended):\n'
     printf '                  sudo ds64-lock     # read-only + persistent store\n'
     printf '                  sudo ds64-unlock   # undo, e.g. to update the OS\n\n'
-    printf '    Update code   sudo ds64-update   # git-pull + restart, no reboot\n'
-    printf '    Full update   re-run this installer (git-pulls + restarts)\n'
+    printf '    Update        sudo ds64-update   # git-pull + restart; runs this\n'
+    printf '                  installer automatically for structural changes\n'
 fi
 
 if [ "$REBOOT_NEEDED" -eq 1 ]; then

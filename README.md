@@ -146,8 +146,9 @@ responds after that reboot**.
 
 - **Update later:** run `sudo ds64-update` — it fetches the latest version and
   restarts in seconds, **no reboot**, even in read-only appliance mode. (For the
-  rare update that also changes the system setup, it tells you to run the full
-  update instead; see [Appliance mode](#appliance-mode-read-only-power-loss-proof).)
+  rare update that also changes the system setup it runs the full installer for you —
+  if the system is locked it first asks you to `sudo ds64-unlock`; see
+  [Appliance mode](#appliance-mode-read-only-power-loss-proof).)
 - **Skip the read-only mode:** prefix the install command with `DS64_NO_HARDEN=1` to
   leave the card writable. Not recommended — a power cut can then corrupt it (see
   [Appliance mode](#appliance-mode-read-only-power-loss-proof)).
@@ -296,16 +297,18 @@ sudo ds64-update    # fetch the latest version and restart — no reboot
 ```
 
 It works straight away in appliance mode and takes only a few seconds. If an update
-*also* changes the system setup — the OS, the background services or the boot
-configuration (rare) — `ds64-update` says so and you run the **full update**
-instead: unlock, then re-install (which pulls everything and re-hardens for you):
+*also* changes the system setup — the background services, the installer or the boot
+configuration (rare) — `ds64-update` runs the full installer for you (it pulls
+everything and re-hardens). That step needs a writable system, so if the appliance
+is locked `ds64-update` stops and asks you to unlock first:
 
 ```
 sudo ds64-unlock    # make the system writable again, then reboots
 ```
 
-After it reboots, re-run the install command. You can also re-harden by hand at any
-time:
+After it reboots, run `sudo ds64-update` again (add `--dev` if you track the dev
+branch) — it finishes the full install and re-hardens. You can also re-harden by
+hand at any time:
 
 ```
 sudo ds64-lock      # back to the read-only appliance (one reboot)
