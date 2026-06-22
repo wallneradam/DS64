@@ -85,6 +85,8 @@ before=$(git -C "$DEST" rev-parse -q --verify HEAD 2>/dev/null || echo none)
 git -C "$DEST" fetch -q --depth=1 origin "$BRANCH"
 git -C "$DEST" reset -q --hard "origin/$BRANCH"
 git -C "$DEST" clean -qfd
+sync   # flush the checkout to the persistent image (the Pi runs off the C64's power;
+       # git does not fsync, so an unsynced loop-image write can be lost on a power-cut)
 after=$(git -C "$DEST" rev-parse -q --verify HEAD 2>/dev/null || echo none)
 if [ "$before" = "$after" ]; then ok "already at ${after:0:7}"; else chg "now at ${after:0:7}"; fi
 

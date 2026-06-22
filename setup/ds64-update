@@ -138,6 +138,11 @@ if [ "$before" != "$after" ] || [ "$cur_branch" != "$BRANCH" ]; then
     changed=$(git -C "$DEST" diff --name-only "$before" "$after")
     git -C "$DEST" checkout -q -f -B "$BRANCH" "origin/$BRANCH"
     git -C "$DEST" clean -qfd
+    # Flush the pull to the persistent image NOW. The Pi runs off the C64's power,
+    # so a cut right after an update must not leave half-written (0-byte) files --
+    # git does not fsync its objects and the persist store is a loop-backed image
+    # (double write-back), so unsynced data can linger in cache and be lost.
+    sync
     if [ "$cur_branch" = "$BRANCH" ]; then
         chg "updated ${before:0:7} -> ${after:0:7}"
     else
