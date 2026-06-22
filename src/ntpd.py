@@ -30,6 +30,9 @@ NTP_PORT = int(os.environ.get("DS64_NTP_PORT", "123"))
 # Seconds between the NTP epoch (1900-01-01) and the Unix epoch (1970-01-01).
 NTP_EPOCH_OFFSET = 2208988800
 
+# systemd-timesyncd creates this once the system clock is NTP-synchronized.
+SYNC_MARKER = "/run/systemd/timesync/synchronized"
+
 DEFAULTS = {
     "ntp_enabled": False,      # bind UDP 123 and answer time queries
     "ntp_offset_minutes": 0,   # added to true UTC before it is served (DST tuning lives here)
@@ -62,6 +65,17 @@ def get_config():
         _cache["mtime"] = m
         _cache["cfg"] = load_config()
     return _cache["cfg"]
+
+
+def clock_synced():
+    """True once the Pi's own clock is trustworthy (NTP-synchronized). The Pi has
+    no RTC and this read-only appliance can't persist the last-known time (the
+    overlay upperdir is tmpfs), so after a cold boot the clock holds a stale baked-in
+    value until timesyncd corrects it over the network. Answering during that window
+    would hand the C64 a confidently-wrong time it won't re-poll for ~1h, so we stay
+    silent until the marker appears -- the client's SNTP retries (forever, <=150 s)
+    then pick up the correct time as soon as we are synced."""
+    return os.path.exists(SYNC_MARKER)
 
 
 def _ntp_ts(unix_time):
@@ -100,6 +114,7 @@ def main():
           file=sys.stderr)
     sock = None
     warned_bind = False
+    warned_unsynced = False
     try:
         while True:
             cfg = get_config()
@@ -145,6 +160,18 @@ def main():
                 continue
             if len(data) < 48:
                 continue
+            # Don't answer until the Pi's own clock is NTP-synced (see clock_synced):
+            # the stale boot-time clock would otherwise be served as gospel and stick
+            # on the C64 for ~1h. Dropping makes the client retry until we are synced.
+            if not clock_synced():
+                if not warned_unsynced:
+                    print("ntpd: clock not NTP-synced yet -- dropping requests until it is",
+                          file=sys.stderr)
+                    warned_unsynced = True
+                continue
+            if warned_unsynced:
+                print("ntpd: clock synced -- serving time", file=sys.stderr)
+                warned_unsynced = False
             offset_min = int(cfg.get("ntp_offset_minutes", 0))
             try:
                 sock.sendto(build_reply(data, offset_min * 60.0), addr)
