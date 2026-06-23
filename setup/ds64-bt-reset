@@ -1,0 +1,77 @@
+#!/bin/bash
+# DS64 Bluetooth recovery -- bring the wedged BCM4345C0 back without a reboot.
+#
+# The Pi's built-in Bluetooth is a BCM4345C0 attached over UART via the serdev
+# driver hci_uart_bcm (bound device serial0-0). On a Disconnect-time firmware
+# wedge every HCI command times out (`hci0: command 0x0406 tx timeout`;
+# `hciconfig hci0 name` -> "Connection timed out (110)") and the chip is dead
+# until it is re-initialised. Unbinding then rebinding the serdev device toggles
+# BT_REG_ON, releases the UART and re-downloads the brcm/BCM4345C0...hcd
+# patchram -- a full chip re-init with no reboot. The on-disk Trusted+LinkKey
+# bond survives, so the controller reconnects on a PS-button press.
+#
+# Safe and idempotent: run by hand (`sudo ds64-bt-reset`) or from the
+# ds64-bt-watch watchdog, which calls this exact script.
+set -u
+
+DRV=/sys/bus/serial/drivers/hci_uart_bcm
+DEV=serial0-0
+HCI=hci0
+
+log() { printf 'ds64-bt-reset: %s\n' "$*" >&2; }
+
+[ "$(id -u)" -eq 0 ] || { log "must run as root (sudo ds64-bt-reset)"; exit 1; }
+
+if [ ! -e "$DRV/unbind" ]; then
+    log "serdev driver $DRV not present -- not a Pi with built-in UART Bluetooth?"
+    exit 1
+fi
+
+# Single-flight: a manual run and the watchdog must not unbind/rebind at once.
+# /run is tmpfs (writable even on the locked appliance) so opening FD 9 cannot
+# fail for root; do NOT add a redirection here -- on `exec` it would apply to the
+# whole shell and silence every later log line.
+exec 9>/run/ds64-bt-reset.lock
+if command -v flock >/dev/null 2>&1 && ! flock -n 9; then
+    log "another recovery is already in progress -- skipping"
+    exit 0
+fi
+
+# Stop the bridge so it is not fighting the adapter while we re-init it.
+systemctl stop ds64-joyd 2>/dev/null || true
+
+# Unbind (drops BT_REG_ON, frees the UART). Ignore errors if the device is
+# already unbound from a previous attempt.
+log "unbinding $DEV"
+echo "$DEV" > "$DRV/unbind" 2>/dev/null || true
+sleep 2
+
+# Rebind -> re-runs the serdev probe -> re-downloads the hcd patchram -> hci0
+# comes back.
+log "rebinding $DEV"
+echo "$DEV" > "$DRV/bind" 2>/dev/null || true
+sleep 3
+
+# Verify the chip answers a local HCI command again (Read Local Name is a pure
+# controller command -- it never touches an air link, so it is a clean liveness
+# probe). hciconfig is lenient about exit codes, so match its output instead.
+ok=0
+for _ in 1 2 3 4 5 6 7 8; do
+    if timeout 4 hciconfig "$HCI" name 2>&1 | grep -q "Name:"; then
+        ok=1
+        break
+    fi
+    sleep 1
+done
+
+# Re-apply page scan (the connectable flag resets on chip re-init) and bring the
+# bridge back -- regardless of the probe result, so we never leave joyd stopped.
+systemctl restart ds64-bt-connectable 2>/dev/null || true
+systemctl restart ds64-joyd 2>/dev/null || true
+
+if [ "$ok" -eq 1 ]; then
+    log "recovered -- $HCI responds; press the controller's PS button to reconnect"
+    exit 0
+fi
+log "FAILED -- $HCI still not responding after rebind; a reboot may be required"
+exit 1

@@ -22,8 +22,8 @@ set -euo pipefail
 
 DEST="${DS64_DEST:-/opt/ds64}"
 BRANCH_OVERRIDE=""   # set by --dev / --main / --branch; empty = DS64_BRANCH env, else main
-UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web ds64-ntp)
-TOOLS=(ds64-lock ds64-unlock ds64-update)
+UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-bt-watch ds64-joyd ds64-web ds64-ntp)
+TOOLS=(ds64-lock ds64-unlock ds64-update ds64-bt-reset)
 # Repo paths whose changes the fast path cannot apply -> need the full installer.
 STRUCT_RE='^(setup/systemd/|install\.sh$|setup/ds64-(lock|unlock|persist\.sh)$|setup/ds64-update$)'
 

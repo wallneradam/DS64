@@ -19,7 +19,7 @@ INPUT_CONF=/etc/bluetooth/input.conf
 NM_PSAVE_CONF=/etc/NetworkManager/conf.d/00-ds64-wifi-powersave-off.conf
 CONFIG_DIR=/etc/ds64
 ARM_FREQ_CAP="${DS64_ARM_FREQ:-800}"   # MHz cap; tune via DS64_ARM_FREQ (600 = safest)
-UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web ds64-ntp)
+UNITS=(ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-bt-watch ds64-joyd ds64-web ds64-ntp)
 
 REBOOT_NEEDED=0
 BT_RESTART=0
@@ -215,7 +215,8 @@ say "Maintenance tooling -> /usr/local/sbin"
 install -m 755 "$DEST/setup/ds64-lock"   /usr/local/sbin/ds64-lock
 install -m 755 "$DEST/setup/ds64-unlock" /usr/local/sbin/ds64-unlock
 install -m 755 "$DEST/setup/ds64-update" /usr/local/sbin/ds64-update
-ok "installed ds64-lock, ds64-unlock, ds64-update"
+install -m 755 "$DEST/setup/ds64-bt-reset" /usr/local/sbin/ds64-bt-reset
+ok "installed ds64-lock, ds64-unlock, ds64-update, ds64-bt-reset"
 
 # --- 10. apply now (or defer to the reboot) ------------------------------------
 if [ "$REBOOT_NEEDED" -eq 0 ]; then
@@ -226,7 +227,7 @@ if [ "$REBOOT_NEEDED" -eq 0 ]; then
         [ -n "$wifi_dev" ] && iw dev "$wifi_dev" set power_save off 2>/dev/null || true
     fi
     say "Applying (dwc2 already active) -- (re)starting services"
-    systemctl restart ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-joyd ds64-web ds64-ntp || true
+    systemctl restart ds64-gadget ds64-gadget-watch ds64-bt-connectable ds64-bt-watch ds64-joyd ds64-web ds64-ntp || true
     ok "services restarted"
 fi
 

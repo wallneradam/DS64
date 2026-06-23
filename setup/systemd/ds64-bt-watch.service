@@ -1,0 +1,13 @@
+[Unit]
+Description=DS64 Bluetooth watchdog (recover the BCM4345C0 UART firmware wedge without a reboot)
+After=bluetooth.service ds64-bt-connectable.service
+Wants=bluetooth.service
+ConditionPathExists=/opt/ds64/setup/bt-watch.sh
+
+[Service]
+ExecStart=/bin/bash /opt/ds64/setup/bt-watch.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
