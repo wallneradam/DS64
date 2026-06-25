@@ -181,12 +181,60 @@ def _u64_probe(host, timeout=0.6):
     return True, info
 
 
+# Once the host is HTTP-confirmed to be an Ultimate, ongoing reachability is checked
+# with a single ICMP echo instead of a full REST GET -- far less work for both the Pi
+# and the Ultimate's lwIP stack on every 12s probe. The HTTP identity check re-runs
+# only when the configured host changes or after the U64 has gone unreachable, so a
+# reboot is re-confirmed once before we trust ping again (and a fresh page load re-runs
+# detection anyway).
+_U64_CACHE = {"host": None, "info": None}   # last HTTP-confirmed identity
+
+
+def _ping(host, timeout=1):
+    """True if `host` answers one ICMP echo within `timeout` seconds."""
+    host = (host or "").strip()
+    if not host:
+        return False
+    try:
+        return subprocess.run(
+            ["ping", "-c", "1", "-W", str(timeout), host],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=timeout + 1).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _u64_result(host, reachable, info):
+    info = info or {}
+    return {"host": host, "reachable": reachable,
+            "product": info.get("product") if reachable else None,
+            "hostname": info.get("hostname") if reachable else None}
+
+
 def u64_status():
-    """Reachability of the configured U64 address, for the web UI's live badge."""
-    host = read_config().get("u64_host", "")
+    """Reachability of the configured U64 address, for the web UI's live badge.
+    Confirms it really is an Ultimate over HTTP once, then keeps checking with a
+    cheap ping; see the _U64_CACHE note above."""
+    host = read_config().get("u64_host", "").strip()
+    if not host:
+        _U64_CACHE.update(host=None, info=None)
+        return _u64_result("", False, None)
+
+    if _U64_CACHE["host"] == host and _U64_CACHE["info"] is not None:
+        if _ping(host):
+            return _u64_result(host, True, _U64_CACHE["info"])
+        # Gone -- drop the identity so a recovery re-confirms it is still a U64.
+        _U64_CACHE.update(host=None, info=None)
+        return _u64_result(host, False, None)
+
+    # Not yet identified (first contact, host changed, or recovering): a quick ping
+    # gates the HTTP probe so a dead address costs one ping, not a REST timeout.
+    if not _ping(host):
+        return _u64_result(host, False, None)
     ok, info = _u64_probe(host, timeout=1.5)
-    return {"host": host, "reachable": ok,
-            "product": info.get("product"), "hostname": info.get("hostname")}
+    if ok:
+        _U64_CACHE.update(host=host, info=info)
+    return _u64_result(host, ok, info)
 
 
 U64_NTP_EN_PATH = "/v1/configs/Network%20Settings/SNTP%20Enable"  # RAM-only PUT
