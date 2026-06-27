@@ -131,6 +131,40 @@ else
     ok "CPU cap (arm_boost=0, arm_freq=$ARM_FREQ_CAP) present"
 fi
 
+# DS64 is a headless appliance -- no display, no speaker -- so strip the graphics
+# stack to trim idle current off the C64's USB rail and free RAM. Disabling the
+# vc4 KMS overlay unloads the whole DRM/vc4/v3d module stack and releases its CMA
+# reservation (~448 MB on a 2 GB Pi 4); with no KMS and no monitor the firmware
+# leaves HDMI powered off on its own (vcgencmd display_power=0), so no extra
+# HDMI-off step is needed. audio=off drops the bcm2835 soundcard (the snd_bcm2835
+# module stays resident but inert). The ACT LED, WiFi, BT and Ethernet are left ON.
+say "Headless: disable KMS/GPU + audio in $CONFIG_TXT"
+hp_changed=0
+if grep -qE '^[[:space:]]*dtoverlay=vc4-f?kms-v3d' "$CONFIG_TXT"; then
+    sed -i -E 's/^([[:space:]]*dtoverlay=vc4-f?kms-v3d.*)/#\1/' "$CONFIG_TXT"
+    chg "disabled KMS/GPU overlay (vc4-kms-v3d) -- reboot needed"
+    hp_changed=1
+else
+    ok "KMS/GPU overlay already disabled/absent"
+fi
+if grep -qE '^[[:space:]]*max_framebuffers=' "$CONFIG_TXT"; then
+    sed -i -E 's/^([[:space:]]*max_framebuffers=.*)/#\1/' "$CONFIG_TXT"
+    chg "disabled max_framebuffers -- reboot needed"
+    hp_changed=1
+fi
+if grep -qE '^[[:space:]]*dtparam=audio=off[[:space:]]*$' "$CONFIG_TXT"; then
+    ok "audio already off"
+elif grep -qE '^[[:space:]]*dtparam=audio=' "$CONFIG_TXT"; then
+    sed -i -E 's/^([[:space:]]*)dtparam=audio=.*/\1dtparam=audio=off/' "$CONFIG_TXT"
+    chg "disabled audio (dtparam=audio=off) -- reboot needed"
+    hp_changed=1
+else
+    printf '\n[all]\ndtparam=audio=off\n' >> "$CONFIG_TXT"
+    chg "added dtparam=audio=off -- reboot needed"
+    hp_changed=1
+fi
+[ "$hp_changed" -eq 1 ] && REBOOT_NEEDED=1
+
 # --- 4. controller kernel modules at boot --------------------------------------
 say "Controller modules -> $MODULES_CONF"
 want_mods=$'uhid\nhid_playstation'
