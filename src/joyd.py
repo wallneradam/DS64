@@ -79,6 +79,7 @@ DEFAULTS = {
     "mode": "auto",           # "auto" | "manual"
     "idle_timeout": 2.0,      # seconds of no input before auto switches back to Normal
     "u64_host": "192.168.5.64",
+    "u64_password": "",            # X-Password header for the U64 REST API ("" = none)
     "active_color": [0, 255, 0],   # lightbar while WASD active (green)
     "idle_color": [0, 0, 255],     # lightbar while idle/normal (blue)
     "ps_menu": True,               # PS button -> toggle the U64 menu (menu_button API)
@@ -718,9 +719,15 @@ class Bridge:
             print("lightbar write error:", ex, file=sys.stderr)
 
     def _rest_call(self, label, url):
-        """Blocking PUT -- only call OFF the event loop (worker thread / shutdown)."""
+        """Blocking PUT -- only call OFF the event loop (worker thread / shutdown).
+        Reads the password live from cfg so a config reload takes effect at once."""
         try:
-            req = urllib.request.Request(url, method="PUT")
+            headers = {}
+            pw = self.cfg.get("u64_password", "")
+            if pw:
+                # Required once the U64 has a Network Password set (HTTP 403 otherwise).
+                headers["X-Password"] = pw
+            req = urllib.request.Request(url, method="PUT", headers=headers)
             urllib.request.urlopen(req, timeout=3).read()
         except Exception as ex:
             print("REST %s failed: %s" % (label, ex), file=sys.stderr)

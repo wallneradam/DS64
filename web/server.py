@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,7 @@ DEFAULTS = {
     "mode": "auto",
     "idle_timeout": 2.0,
     "u64_host": "192.168.5.64",
+    "u64_password": "",
     "active_color": [0, 255, 0],
     "idle_color": [0, 0, 255],
     "ps_menu": True,
@@ -160,25 +162,56 @@ U64_VERSION_PATH = "/v1/version"   # GET -> {"version": ...}; confirms the Ultim
 U64_INFO_PATH = "/v1/info"         # GET -> product/firmware/hostname for a friendly label
 
 
-def _u64_probe(host, timeout=0.6):
-    """Return (ok, info). `ok` is True if `host` answers the Ultimate REST API
-    (GET /v1/version parses as JSON); `info` adds product/hostname from /v1/info."""
+def _u64_headers(password):
+    """Auth header for the Ultimate REST API. Once a Network Password is set on the
+    U64, the firmware rejects EVERY call (even GET /v1/version) with HTTP 403 unless
+    it carries an `X-Password` header (firmware api/routes.h), so attach it whenever
+    the user has configured one. Empty -> no header (the firmware skips the check)."""
+    return {"X-Password": password} if password else {}
+
+
+def _u64_locked_403(err):
+    """True if `err` is the Ultimate's HTTP 403 -- a Network Password is set and ours
+    is missing or wrong. Identified by the firmware's `{"errors":[...]}` JSON body,
+    which is positive proof an Ultimate lives here even though we are not authorized."""
+    if getattr(err, "code", None) != 403:
+        return False
+    try:
+        obj = json.loads(err.read().decode())
+    except Exception:
+        return False
+    return isinstance(obj, dict) and "errors" in obj
+
+
+def _u64_probe(host, timeout=0.6, password=""):
+    """Identify the Ultimate at `host`. Returns (state, info):
+      "ok"     -- answers the REST API (GET /v1/version parses as JSON); `info` adds
+                  product/hostname from /v1/info.
+      "locked" -- an Ultimate is here but a Network Password is set and ours is
+                  missing/wrong (HTTP 403 + the firmware's JSON error body). Enough to
+                  fill in the address and prompt for the password; `info` is {}.
+      "no"     -- not an Ultimate, or unreachable; `info` is {}."""
     host = (host or "").strip()
     if not host:
-        return False, {}
+        return "no", {}
     base = "http://%s" % host
+    headers = _u64_headers(password)
     try:
-        with urllib.request.urlopen(base + U64_VERSION_PATH, timeout=timeout) as r:
+        req = urllib.request.Request(base + U64_VERSION_PATH, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return ("locked", {}) if _u64_locked_403(e) else ("no", {})
     except Exception:
-        return False, {}
+        return "no", {}
     info = {}
     try:
-        with urllib.request.urlopen(base + U64_INFO_PATH, timeout=timeout) as r:
+        req = urllib.request.Request(base + U64_INFO_PATH, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             info = json.loads(r.read().decode())
     except Exception:
         pass
-    return True, info
+    return "ok", info
 
 
 # Once the host is HTTP-confirmed to be an Ultimate, ongoing reachability is checked
@@ -187,7 +220,7 @@ def _u64_probe(host, timeout=0.6):
 # only when the configured host changes or after the U64 has gone unreachable, so a
 # reboot is re-confirmed once before we trust ping again (and a fresh page load re-runs
 # detection anyway).
-_U64_CACHE = {"host": None, "info": None}   # last HTTP-confirmed identity
+_U64_CACHE = {"host": None, "password": None, "info": None}   # last HTTP-confirmed identity
 
 
 def _ping(host, timeout=1):
@@ -204,9 +237,9 @@ def _ping(host, timeout=1):
         return False
 
 
-def _u64_result(host, reachable, info):
+def _u64_result(host, reachable, info, locked=False):
     info = info or {}
-    return {"host": host, "reachable": reachable,
+    return {"host": host, "reachable": reachable, "locked": locked,
             "product": info.get("product") if reachable else None,
             "hostname": info.get("hostname") if reachable else None}
 
@@ -215,32 +248,41 @@ def u64_status():
     """Reachability of the configured U64 address, for the web UI's live badge.
     Confirms it really is an Ultimate over HTTP once, then keeps checking with a
     cheap ping; see the _U64_CACHE note above."""
-    host = read_config().get("u64_host", "").strip()
+    cfg = read_config()
+    host = cfg.get("u64_host", "").strip()
+    password = cfg.get("u64_password", "")
     if not host:
-        _U64_CACHE.update(host=None, info=None)
+        _U64_CACHE.update(host=None, password=None, info=None)
         return _u64_result("", False, None)
 
-    if _U64_CACHE["host"] == host and _U64_CACHE["info"] is not None:
+    # The cache is keyed on (host, password): changing either re-runs the HTTP probe,
+    # so clearing/altering the password can't keep ping-claiming "connected" while the
+    # REST API is actually 403-locked (ICMP needs no password).
+    if (_U64_CACHE["host"] == host and _U64_CACHE["password"] == password
+            and _U64_CACHE["info"] is not None):
         if _ping(host):
             return _u64_result(host, True, _U64_CACHE["info"])
         # Gone -- drop the identity so a recovery re-confirms it is still a U64.
-        _U64_CACHE.update(host=None, info=None)
+        _U64_CACHE.update(host=None, password=None, info=None)
         return _u64_result(host, False, None)
 
-    # Not yet identified (first contact, host changed, or recovering): a quick ping
-    # gates the HTTP probe so a dead address costs one ping, not a REST timeout.
+    # Not yet identified (first contact, host/password changed, or recovering): a quick
+    # ping gates the HTTP probe so a dead address costs one ping, not a REST timeout.
     if not _ping(host):
         return _u64_result(host, False, None)
-    ok, info = _u64_probe(host, timeout=1.5)
-    if ok:
-        _U64_CACHE.update(host=host, info=info)
-    return _u64_result(host, ok, info)
+    state, info = _u64_probe(host, timeout=1.5, password=password)
+    if state == "ok":
+        _U64_CACHE.update(host=host, password=password, info=info)
+        return _u64_result(host, True, info)
+    # Not usable -- drop any stale identity so the cheap-ping path can't resurrect it.
+    _U64_CACHE.update(host=None, password=None, info=None)
+    return _u64_result(host, False, None, locked=(state == "locked"))
 
 
 U64_NTP_EN_PATH = "/v1/configs/Network%20Settings/SNTP%20Enable"  # RAM-only PUT
 
 
-def _u64_force_ntp_resync(host, timeout=2.0):
+def _u64_force_ntp_resync(host, password="", timeout=2.0):
     """Make the Ultimate re-read the time NOW by toggling its 'SNTP Enable' off
     then on over the REST config API: the firmware re-runs start_sntp() only on an
     actual value change, so a plain re-set is a no-op -- hence the off->on flip.
@@ -248,12 +290,13 @@ def _u64_force_ntp_resync(host, timeout=2.0):
     host = (host or "").strip()
     if not host:
         return False
+    headers = _u64_headers(password)
     try:
         for value in ("Disabled", "Enabled"):
             url = "http://%s%s?value=%s" % (host, U64_NTP_EN_PATH,
                                             urllib.parse.quote(value))
-            urllib.request.urlopen(urllib.request.Request(url, method="PUT"),
-                                   timeout=timeout).read()
+            req = urllib.request.Request(url, method="PUT", headers=headers)
+            urllib.request.urlopen(req, timeout=timeout).read()
         return True
     except Exception as ex:
         print("U64 NTP resync failed:", ex, file=sys.stderr)
@@ -302,13 +345,17 @@ def detect_u64():
     """Scan the local network for a C64 Ultimate (no mDNS in the firmware, so we
     probe /v1/version). Returns every match, the configured host probed first;
     the UI offers the first hit to fill in. Read-only -- safe to call anytime."""
-    cur = read_config().get("u64_host", "").strip()
+    cfg = read_config()
+    cur = cfg.get("u64_host", "").strip()
+    password = cfg.get("u64_password", "")
     candidates = ([cur] if cur else []) + [h for h in _scan_hosts() if h != cur]
 
     def probe(h):
-        ok, info = _u64_probe(h, timeout=0.6)
-        return {"host": h, "product": info.get("product"),
-                "hostname": info.get("hostname")} if ok else None
+        state, info = _u64_probe(h, timeout=0.6, password=password)
+        if state == "no":
+            return None
+        return {"host": h, "locked": state == "locked",
+                "product": info.get("product"), "hostname": info.get("hostname")}
 
     found = []
     if candidates:
@@ -636,6 +683,11 @@ async def post_config(request):
         cfg["idle_timeout"] = max(0.5, min(300.0, float(data["idle_timeout"])))
     if "u64_host" in data and str(data["u64_host"]).strip():
         cfg["u64_host"] = str(data["u64_host"]).strip()
+    # Network Password for the U64 REST API (X-Password header). Not stripped --
+    # spaces are legal password characters; "" disables it. The firmware caps it
+    # at 31 chars (CFG_NETWORK_PASSWORD).
+    if "u64_password" in data:
+        cfg["u64_password"] = str(data["u64_password"])[:31]
     for flag in ("ps_menu", "circle_left", "options_f1", "share_swap", "touchpad_mouse",
                  "touchpad_two_finger_right", "mouse_invert_x", "mouse_invert_y",
                  "ext_mouse_with_touchpad", "ntp_enabled"):
@@ -665,7 +717,8 @@ async def post_config(request):
     just_enabled = bool(cfg.get("ntp_enabled")) and not old_enabled
     ntp_resynced = None
     if cfg.get("ntp_enabled") and (offset_changed or just_enabled):
-        ntp_resynced = await off(_u64_force_ntp_resync, cfg.get("u64_host", ""))
+        ntp_resynced = await off(_u64_force_ntp_resync, cfg.get("u64_host", ""),
+                                 cfg.get("u64_password", ""))
     return web.json_response({"ok": True, "config": cfg, "ntp_resynced": ntp_resynced})
 
 

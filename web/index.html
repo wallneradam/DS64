@@ -117,11 +117,13 @@
     </div>
     <input type="text" id="u64host" class="hostbox" placeholder="192.168.5.64"
            spellcheck="false" autocomplete="off">
+    <input type="password" id="u64pass" class="hostbox" placeholder="network password (leave empty if none)"
+           spellcheck="false" autocomplete="off" style="margin-top:8px">
     <div class="btnrow" style="margin-top:10px">
       <button class="logbtn" id="u64detect">DETECT</button>
       <button class="logbtn" id="u64save">SAVE</button>
     </div>
-    <div class="muted" style="margin-top:10px">The Pi reaches the U64 over the network to switch it in and out of joystick mode. Auto-detected when possible; edit to override.</div>
+    <div class="muted" style="margin-top:10px">The Pi reaches the U64 over the network to switch it in and out of joystick mode. Auto-detected when possible; edit to override. If the U64 has a Network Password set, enter it here -- detection and switching need it too.</div>
   </div>
 
   <div class="card">
@@ -334,6 +336,7 @@ function paintConfig(c) {
   paintSeg('ext_mouse_with_touchpad', c.ext_mouse_with_touchpad ? 1 : 0);
   paintSeg('ntp_enabled', c.ntp_enabled ? 1 : 0);
   if (document.activeElement !== $('#ntpoff')) $('#ntpoff').value = Number(c.ntp_offset_minutes) || 0;
+  if (document.activeElement !== $('#u64pass')) $('#u64pass').value = c.u64_password || '';
   const sx = Number(c.mouse_sensitivity_x), sy = Number(c.mouse_sensitivity_y);
   $('#msx').value = Math.min(1, Math.max(0.02, sx)); $('#msxval').value = sx;
   $('#msy').value = Math.min(1, Math.max(0.02, sy)); $('#msyval').value = sy;
@@ -554,7 +557,9 @@ function renderU64(j) {
   $('#u64state').innerHTML = j.reachable
     ? '<span class="ok">connected</span> &middot; ' + (j.product || 'Ultimate')
       + (j.hostname ? ' &middot; ' + j.hostname : '')
-    : '<span class="warn">not reachable</span>';
+    : (j.locked
+        ? '<span class="warn">found &mdash; enter the network password</span>'
+        : '<span class="warn">not reachable</span>');
   return !!j.reachable;
 }
 
@@ -568,11 +573,19 @@ async function detectU64() {
   b.disabled = true; b.textContent = 'SCANNING...';
   $('#u64state').innerHTML = '<span class="muted">scanning the network...</span>';
   try {
+    // Persist a just-typed password first: the server-side scan probes with it,
+    // and a password-protected U64 stays invisible (HTTP 403) without it.
+    await save({u64_password: $('#u64pass').value});
     const j = await (await fetch('/api/detect_u64', {method:'POST'})).json();
     if (j.found && j.found.length) {
-      $('#u64host').value = j.found[0].host;
-      await save({u64_host: j.found[0].host});
-      await refreshU64();
+      const f = j.found[0];
+      $('#u64host').value = f.host;
+      await save({u64_host: f.host});
+      if (f.locked) {
+        $('#u64state').innerHTML = '<span class="warn">found ' + f.host + ' &mdash; enter the network password and SAVE</span>';
+      } else {
+        await refreshU64();
+      }
     } else {
       $('#u64state').innerHTML = '<span class="warn">no U64 found &mdash; enter the address manually</span>';
     }
@@ -584,14 +597,16 @@ async function detectU64() {
 
 async function saveHost() {
   const v = $('#u64host').value.trim();
+  const pw = $('#u64pass').value;
   if (!v) { refreshU64(); return; }
-  await save({u64_host: v});
+  await save({u64_host: v, u64_password: pw});
   refreshU64();
 }
 
 $('#u64detect').onclick = detectU64;
 $('#u64save').onclick = saveHost;
 $('#u64host').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); saveHost(); } };
+$('#u64pass').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); saveHost(); } };
 
 // Pi-hole-style "update available" hint: the server compares the deployed git
 // HEAD with the remote tip of the tracked branch and pushes the verdict here.
