@@ -456,6 +456,9 @@ class Bridge:
         self.last_kbd_reopen = 0.0
         self.mouse = MouseForwarder()
         self.wasd_on = None          # tri-state until first set_wasd()
+        # WASD keystrokes are gated until the swapper-switch REST call lands, so a
+        # W/A/S/D can't reach the C64 as a real letter before the U64 is in WASD mode.
+        self._wasd_armed = False
         self.last_active = 0.0
         self.status_cache = None
         self.last_status_ts = 0.0
@@ -536,9 +539,10 @@ class Bridge:
     # --- outputs ---
     def send_keys(self):
         keys = []
-        # WASD only in joystick mode (otherwise the letters would type), but F1 is a
-        # function key -> it is sent whenever options is held, joystick on or off.
-        if self.wasd_on:
+        # WASD only once the swapper switch has landed (_wasd_armed): until then the
+        # U64 is still in Normal mode and the letters would type on screen. F1 is a
+        # real function key -> it is sent whenever options is held, joystick or not.
+        if self.wasd_on and self._wasd_armed:
             up, down, left, right, fire = self.state()
             if up: keys.append(W)
             if down: keys.append(S)
@@ -723,28 +727,43 @@ class Bridge:
 
     def _rest_worker(self):
         while True:
-            label, url = self._rest_q.get()
+            label, url, done = self._rest_q.get()
             self._rest_call(label, url)
+            if done is not None:
+                done()
             self._rest_q.task_done()
 
-    def _rest_enqueue(self, label, url):
+    def _rest_enqueue(self, label, url, done=None):
         try:
-            self._rest_q.put_nowait((label, url))
+            self._rest_q.put_nowait((label, url, done))
         except queue.Full:
             print("REST queue full, dropping", label, file=sys.stderr)
+            # Don't strand the WASD gate if the switch is dropped under an outage --
+            # arm anyway so the joystick stays alive rather than dead until a toggle.
+            if done is not None:
+                done()
 
     def _swapper_url(self, value):
         return "http://%s%s?value=%s" % (
             self.cfg["u64_host"], SWAPPER_PATH, urllib.parse.quote(value))
 
-    def rest_put(self, value):
-        self._rest_enqueue("put '%s'" % value, self._swapper_url(value))
+    def rest_put(self, value, done=None):
+        self._rest_enqueue("put '%s'" % value, self._swapper_url(value), done)
+
+    def _arm_wasd(self):
+        """Worker-thread callback: the swapper switch has landed, so WASD keystrokes
+        may now flow. Plain bool store is atomic under the GIL; the event loop reads
+        it on the next tick (<=TICK later) and sends any held direction as joystick."""
+        self._wasd_armed = True
 
     def set_wasd(self, on):
         if on == self.wasd_on:
             return
         if on:
-            self.rest_put("WASD Port %d" % int(self.cfg["port"]))
+            # Hold back WASD keystrokes until the switch REST call returns, or a held
+            # direction would type a letter before the U64 leaves Normal mode.
+            self._wasd_armed = False
+            self.rest_put("WASD Port %d" % int(self.cfg["port"]), done=self._arm_wasd)
             self.set_color(self.cfg["active_color"])
             self.wasd_on = True
         else:
