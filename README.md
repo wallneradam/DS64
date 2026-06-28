@@ -338,6 +338,13 @@ hardening in the first place, prefix the install command with `DS64_NO_HARDEN=1`
   the DS64 should be the only keyboard-like USB device on the Ultimate. If it's a
   **mouse** you wanted there, plug it into the **Pi** instead — DS64 forwards it as
   the 1351 with no such conflict (see [Mouse (USB)](#mouse-usb)).
+- **Controller keeps dropping or stuttering during play?** The Pi's built-in
+  **Bluetooth and WiFi share one 2.4 GHz radio**, so a weak or 2.4 GHz WiFi link
+  fights the controller's Bluetooth and the link drops. Give the WiFi a **strong
+  signal**: keep the Pi close to the router, or add an access point / repeater
+  nearby — and prefer a **5 GHz** connection, which keeps WiFi out of Bluetooth's
+  2.4 GHz band. Failing that, connect the Pi by **Ethernet cable** and disable
+  WiFi, which takes WiFi off the shared radio entirely.
 
 ## Limitations
 
