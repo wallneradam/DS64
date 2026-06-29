@@ -97,7 +97,7 @@ requirement is simply that the board *has* such a port.
 | ------------------- | -------------------------- |
 | **Pi 4 Model B**    | **Tested** — the reference |
 | Pi 5                | Should work (untested)     |
-| Pi Zero 2 W         | Likely (untested)          |
+| Pi Zero 2 W         | **Tested**                 |
 | Pi 3 Model A+       | Likely (untested)          |
 | Pi 3 Model B / 3 B+ | **Not supported**          |
 
